@@ -1,4 +1,4 @@
-/* Workshop Distance
+/* SCALA Workshop Registration System
  * Reads a participant's address from a Thai ID card photo, places the home on a map,
  * calculates the travel distance to the workshop venue for the selected day and
  * produces a cash receipt (PDF) per participant.
@@ -15,6 +15,7 @@ const RECEIPT_DEFAULTS = {
   receiptTitle: 'Participant transportation for NbS field consultation workshop under UNFA/GLO/092/UND: “Scaling up Climate Ambition on Land Use and Agriculture through Nationally Determined Contributions and National Adaptation Plans”',
   receiptFrom: 'Food and Agriculture Organization of the United Nations\nRegional Office for Asia and the Pacific\n39 Maliwan Mansion, Phra Atit Road, Bangkok 10200, Thailand\nPhone: (+66 2) 697 4000   Fax: (+66 2) 697 4445   E-mail: FAO-RAP@fao.org',
   rate: 5.58,
+  regTitle: 'Workshop – SCALA field consultation',
 };
 
 const PROVINCES = [
@@ -824,7 +825,7 @@ $('#shareSetup').addEventListener('click', async () => {
   input.value = link;
   input.hidden = false;
   if (navigator.share) {
-    try { await navigator.share({ title: 'Workshop Distance venues', url: link }); return; } catch { /* cancelled: fall through to copy */ }
+    try { await navigator.share({ title: 'SCALA Workshop Registration venues', url: link }); return; } catch { /* cancelled: fall through to copy */ }
   }
   try {
     await navigator.clipboard.writeText(link);
@@ -960,23 +961,41 @@ function readForm() {
   return {
     name: oneLine($('#fName').value),
     nameEn: oneLine($('#fNameEn').value),
+    sex: $('#fSex').value,
     house: oneLine($('#fHouse').value),
     tambon: oneLine($('#fTambon').value),
     amphoe: oneLine($('#fAmphoe').value),
     province: oneLine($('#fProvince').value),
+    consentJoin: $('#fConsentJoin').checked,
+    consentPhoto: $('#fConsentPhoto').checked,
   };
 }
 
 function fillForm(r) {
   $('#fName').value = r.name || '';
   $('#fNameEn').value = r.nameEn || '';
+  $('#fSex').value = r.sex || guessSex(r.name, r.nameEn);
   $('#fHouse').value = r.house || '';
   $('#fTambon').value = r.tambon || '';
   $('#fAmphoe').value = r.amphoe || '';
   $('#fProvince').value = r.province || '';
+  $('#fConsentJoin').checked = !!r.consentJoin;
+  $('#fConsentPhoto').checked = !!r.consentPhoto;
   $('#rawText').textContent = r.raw || '';
   $('#rawBox').hidden = !r.raw;
 }
+
+// The title on the ID card gives the sex: นาย / Mr. -> M, นาง / นางสาว / Mrs. / Miss -> F.
+function guessSex(th, en) {
+  const t = oneLine(th), e = oneLine(en).toLowerCase();
+  if (/^(?:นาย|เด็กชาย|ด\.ช\.)/.test(t) || /^(?:mr|master)\b/.test(e)) return 'M';
+  if (/^(?:นาง|เด็กหญิง|ด\.ญ\.)/.test(t) || /^(?:mrs|miss|ms)\b/.test(e)) return 'F';
+  return '';
+}
+
+['#fName', '#fNameEn'].forEach(sel => $(sel).addEventListener('change', () => {
+  if (!$('#fSex').value) $('#fSex').value = guessSex($('#fName').value, $('#fNameEn').value);
+}));
 
 function loadImage(file) {
   return new Promise((resolve, reject) => {
@@ -1198,6 +1217,7 @@ async function saveRecord(asNew) {
     const dup = state.people.find(p => p.venueId === v.id && bare(p.name) === bare(f.name) && bare(p.nameEn) === bare(f.nameEn));
     if (dup && !confirm(`${f.name || f.nameEn} is already recorded for this venue. Save another record?`)) return;
   }
+  if (!f.consentJoin && !confirm('Participation consent (ยินยอมเข้าร่วม) is not ticked. Save anyway?')) return;
   const btn = asNew ? $('#saveNewBtn') : $('#saveBtn');
   busy(btn, true, 'Saving…');
   if (scan.routePromise) await scan.routePromise;
@@ -1334,6 +1354,8 @@ function renderPeople() {
           ${rough ? '<span class="badge warn">Rough location</span>' : ''}
           ${p.hasPhoto ? '' : '<span class="badge warn">No ID photo</span>'}
           ${p.hasSignature ? '<span class="badge ok">Signed</span>' : '<span class="badge warn">Not signed</span>'}
+          ${p.consentJoin === false ? '<span class="badge warn">No participation consent</span>' : ''}
+          ${p.consentPhoto === false ? '<span class="badge warn">No photo consent</span>' : ''}
         </div>
       </div>
       <div class="item-km">
@@ -1412,6 +1434,7 @@ function toCsv(list) {
     ['Venue', p => p.venueName],
     ['Name (Thai)', p => p.name],
     ['Name (English)', p => p.nameEn],
+    ['Sex', p => ({ M: 'Male', F: 'Female' }[p.sex] || '')],
     ['House / Moo / Road', p => p.house],
     ['Subdistrict', p => p.tambon],
     ['District', p => p.amphoe],
@@ -1427,6 +1450,8 @@ function toCsv(list) {
     ['Home longitude', p => p.lng.toFixed(6)],
     ['ID photo', p => (p.hasPhoto ? 'yes' : 'no')],
     ['Signed', p => (p.hasSignature ? 'yes' : 'no')],
+    ['Participation consent', p => (p.consentJoin == null ? '' : p.consentJoin ? 'yes' : 'no')],
+    ['Photo consent', p => (p.consentPhoto == null ? '' : p.consentPhoto ? 'yes' : 'no')],
     ['Recorded at', p => new Date(p.createdAt).toLocaleString('en-GB')],
   ];
   const cell = v => {
@@ -1790,16 +1815,20 @@ async function downloadReceipts(list, filename, btn) {
       const k = 210 / canvas.width;
       doc.link(link.x * k, link.y * k, link.w * k, link.h * k, { url: link.url });
     }
-    const blob = doc.output('blob');
-    // Safari only allows a download straight from a tap; after a slow build, ask for one more tap.
-    if (navigator.userActivation?.isActive) download(filename, blob);
-    else showReady(filename, blob, list.length);
+    deliverPdf(doc, filename, list.length);
   } catch (err) {
     console.error(err);
     toast('Could not make the receipt: ' + err.message, 'error');
   } finally {
     busy(btn, false);
   }
+}
+
+function deliverPdf(doc, filename, pages) {
+  const blob = doc.output('blob');
+  // Safari only allows a download straight from a tap; after a slow build, ask for one more tap.
+  if (navigator.userActivation?.isActive) download(filename, blob);
+  else showReady(filename, blob, pages);
 }
 
 let readyUrl = null;
@@ -1815,6 +1844,204 @@ function showReady(filename, blob, count) {
 $('#readyLink').addEventListener('click', () => setTimeout(() => $('#readyDialog').close(), 300));
 $('#readyClose').addEventListener('click', () => $('#readyDialog').close());
 
+/* ---------- registration sheet ---------- */
+
+// Columns and relative widths follow the paper form (Form_registration.docx).
+const REG_COLS = [
+  { en: 'No.', th: 'ลำดับ', w: 692, center: true, always: true, text: (p, n) => String(n) },
+  { en: 'Sex', th: 'เพศ', w: 625, center: true, text: p => ({ M: 'M / ชาย', F: 'F / หญิง' }[p.sex] || '') },
+  { en: 'Name', th: 'ชื่อ นามสกุล', w: 4115, text: p => [p.name, p.name && p.nameEn ? `(${p.nameEn})` : p.nameEn].filter(Boolean).join(' ') },
+  { en: 'Address', th: 'ที่อยู่', w: 2262, text: p => regAddress(p) },
+  { en: 'Amphoe', th: 'อำเภอ', w: 2263, text: p => bare(p.amphoe) },
+  { en: 'Participation consent', th: 'ยินยอมเข้าร่วม', w: 2265, mark: p => p.consentJoin },
+  { en: 'Photo consent', th: 'ยินยอมการถ่ายภาพ', w: 2263, mark: p => p.consentPhoto },
+];
+
+function regAddress(p) {
+  const bkk = canonicalProvince(p.province) === 'กรุงเทพมหานคร';
+  const t = bare(p.tambon);
+  return [p.house, t && (bkk ? 'แขวง' : 'ต.') + t].filter(Boolean).join(' ');
+}
+
+// ✓ for yes, ✗ for no, nothing when the record predates the consent questions.
+function drawMark(x, cx, cy, ok) {
+  if (ok == null) return;
+  x.save();
+  x.lineWidth = 3.5;
+  x.lineCap = x.lineJoin = 'round';
+  x.strokeStyle = '#111';
+  x.beginPath();
+  if (ok) {
+    x.moveTo(cx - 10, cy);
+    x.lineTo(cx - 3, cy + 8);
+    x.lineTo(cx + 11, cy - 9);
+  } else {
+    x.moveTo(cx - 8, cy - 8);
+    x.lineTo(cx + 8, cy + 8);
+    x.moveTo(cx + 8, cy - 8);
+    x.lineTo(cx - 8, cy + 8);
+  }
+  x.stroke();
+  x.restore();
+}
+
+// A4 landscape pages (150 dpi) for one venue/day; spare numbered rows fill the last page for walk-ins.
+async function drawRegistrationPages(group) {
+  await loadReceiptFonts();
+  const W = 1754, H = 1240, M = 75, CW = W - 2 * M;
+  const FS = 16, LH = 21, PAD = 7, MIN_ROW = 34, HEAD_H = 64, TOP = 140, FOOT = 30;
+  const total = REG_COLS.reduce((s, c) => s + c.w, 0);
+  const cols = REG_COLS.map(c => ({ ...c, px: c.w * CW / total }));
+  const scratch = document.createElement('canvas').getContext('2d');
+  setFont(scratch, FS);
+  const rowFor = (p, n) => {
+    const cells = cols.map(c => (c.text && (p || c.always) ? wrapLines(scratch, c.text(p || {}, n), c.px - 2 * PAD) : []));
+    const lines = Math.max(1, ...cells.map(l => l.length));
+    return { p, n, cells, h: Math.max(MIN_ROW, lines * LH + 2 * PAD) };
+  };
+
+  const avail = H - M - TOP - HEAD_H - FOOT - M;
+  const pages = [];
+  let cur = [], used = 0, n = 0;
+  for (const p of group.people) {
+    const r = rowFor(p, ++n);
+    if (cur.length && used + r.h > avail) { pages.push(cur); cur = []; used = 0; }
+    cur.push(r);
+    used += r.h;
+  }
+  while (used + MIN_ROW <= avail) {
+    const r = rowFor(null, ++n);
+    cur.push(r);
+    used += r.h;
+  }
+  pages.push(cur);
+
+  return pages.map((rows, pi) => {
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const x = c.getContext('2d');
+    x.fillStyle = '#fff';
+    x.fillRect(0, 0, W, H);
+    x.textBaseline = 'top';
+    x.textAlign = 'left';
+
+    let y = M;
+    setFont(x, 26, 700);
+    x.fillStyle = '#3a3a3a';
+    x.fillText((state.settings.regTitle || '').toUpperCase(), M, y);
+    y += 44;
+    for (const [label, value] of [['LOCATION', group.name], ['DATE', group.date ? fmtDate(group.date) : '']]) {
+      setFont(x, 20, 700);
+      x.fillStyle = '#3a3a3a';
+      x.fillText(label, M, y);
+      setFont(x, 20, 400);
+      x.fillStyle = '#111';
+      x.fillText(value || '', M + 130, y);
+      y += 32;
+    }
+
+    y = M + TOP;
+    x.fillStyle = '#E5ECF4';
+    x.fillRect(M, y, CW, HEAD_H);
+    let cx = M;
+    x.textAlign = 'center';
+    x.fillStyle = '#111';
+    for (const col of cols) {
+      setFont(x, 16, 700);
+      x.fillText(col.en, cx + col.px / 2, y + 10);
+      setFont(x, 16, 400);
+      x.fillText(col.th, cx + col.px / 2, y + 34);
+      cx += col.px;
+    }
+    const tableTop = y;
+    y += HEAD_H;
+
+    setFont(x, FS, 400);
+    for (const r of rows) {
+      cx = M;
+      cols.forEach((col, ci) => {
+        if (col.mark) {
+          if (r.p) drawMark(x, cx + col.px / 2, y + r.h / 2, col.mark(r.p));
+        } else {
+          const lines = r.cells[ci];
+          const top = y + (r.h - lines.length * LH) / 2 + 1;
+          x.textAlign = col.center ? 'center' : 'left';
+          x.fillStyle = '#111';
+          lines.forEach((l, li) => x.fillText(l, col.center ? cx + col.px / 2 : cx + PAD, top + li * LH));
+        }
+        cx += col.px;
+      });
+      y += r.h;
+    }
+
+    // Grid: horizontal lines under the header and each row, vertical lines between columns.
+    x.strokeStyle = '#999';
+    x.lineWidth = 1.5;
+    x.beginPath();
+    let ly = tableTop;
+    x.moveTo(M, ly); x.lineTo(M + CW, ly);
+    ly += HEAD_H;
+    x.moveTo(M, ly); x.lineTo(M + CW, ly);
+    for (const r of rows) { ly += r.h; x.moveTo(M, ly); x.lineTo(M + CW, ly); }
+    cx = M;
+    x.moveTo(cx, tableTop); x.lineTo(cx, ly);
+    for (const col of cols) { cx += col.px; x.moveTo(cx, tableTop); x.lineTo(cx, ly); }
+    x.stroke();
+
+    setFont(x, 14, 400);
+    x.fillStyle = '#666';
+    x.textAlign = 'right';
+    x.fillText(`Page ${pi + 1} of ${pages.length}`, M + CW, H - M - 18);
+    return c;
+  });
+}
+
+// One group per venue/day for the current filter, people in registration order.
+function registrationGroups() {
+  const f = $('#peopleFilter').value || 'all';
+  const byTime = (a, b) => a.createdAt.localeCompare(b.createdAt);
+  if (f !== 'all' && f !== 'other') {
+    const v = state.venues.find(x => x.id === f);
+    return [{ name: v.name, date: v.date, people: state.people.filter(p => p.venueId === f).sort(byTime) }];
+  }
+  const groups = new Map();
+  for (const p of state.people) {
+    const v = state.venues.find(x => x.id === p.venueId);
+    if (f === 'other' && v) continue;
+    const key = p.venueId || p.venueName;
+    if (!groups.has(key)) groups.set(key, { name: v?.name || p.venueName, date: v?.date ?? p.venueDate, people: [] });
+    groups.get(key).people.push(p);
+  }
+  return [...groups.values()]
+    .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+    .map(g => ({ ...g, people: g.people.sort(byTime) }));
+}
+
+$('#regSheet').addEventListener('click', async e => {
+  const btn = e.currentTarget;
+  const groups = registrationGroups();
+  if (!groups.length) return toast('No participants yet. Choose a day to print a blank registration sheet.', 'error');
+  busy(btn, true, 'Preparing…');
+  try {
+    const jsPDF = await loadJsPdf();
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: true });
+    let pages = 0;
+    for (const g of groups) {
+      for (const canvas of await drawRegistrationPages(g)) {
+        if (pages++) doc.addPage('a4', 'landscape');
+        doc.addImage(canvas.toDataURL('image/jpeg', 0.9), 'JPEG', 0, 0, 297, 210);
+      }
+    }
+    deliverPdf(doc, `registration-${filterLabel()}.pdf`, pages);
+  } catch (err) {
+    console.error(err);
+    toast('Could not make the registration sheet: ' + err.message, 'error');
+  } finally {
+    busy(btn, false);
+  }
+});
+
 /* ---------- settings ---------- */
 
 function renderSettings() {
@@ -1825,6 +2052,7 @@ function renderSettings() {
   $('#rTitle').value = state.settings.receiptTitle;
   $('#rFrom').value = state.settings.receiptFrom;
   $('#rRate').value = state.settings.rate;
+  $('#regTitle').value = state.settings.regTitle;
 }
 
 $$('input[name="reader"]').forEach(r => r.addEventListener('change', () => {
@@ -1836,6 +2064,7 @@ $('#apiKey').addEventListener('change', e => { state.settings.apiKey = e.target.
 $('#model').addEventListener('change', e => { state.settings.model = e.target.value; saveSettings(); });
 $('#rTitle').addEventListener('change', e => { state.settings.receiptTitle = e.target.value.trim(); saveSettings(); toast('Receipt title saved', 'ok'); });
 $('#rFrom').addEventListener('change', e => { state.settings.receiptFrom = e.target.value.trim(); saveSettings(); toast('Receipt address saved', 'ok'); });
+$('#regTitle').addEventListener('change', e => { state.settings.regTitle = e.target.value.trim(); saveSettings(); toast('Registration sheet title saved', 'ok'); });
 $('#rRate').addEventListener('change', e => {
   const rate = parseFloat(e.target.value);
   if (!(rate >= 0)) { toast('Enter a valid rate.', 'error'); renderSettings(); return; }
@@ -1862,7 +2091,7 @@ $('#restoreInput').addEventListener('change', async e => {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    if (data.app !== 'workshop-distance' || !Array.isArray(data.people) || !Array.isArray(data.venues)) throw new Error('not a Workshop Distance backup');
+    if (data.app !== 'workshop-distance' || !Array.isArray(data.people) || !Array.isArray(data.venues)) throw new Error('not a backup from this app');
     if (!confirm(`Add ${data.people.length} participant(s) and ${data.venues.length} venue(s) from this backup? Records already on this device are kept; the same records are updated.`)) return;
     const merge = (target, items) => items.forEach(it => {
       const i = target.findIndex(x => x.id === it.id);

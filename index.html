@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="Workshop Distance">
+  <meta name="apple-mobile-web-app-title" content="SCALA Registration">
   <meta name="theme-color" content="#0f766e">
-  <title>Workshop Distance</title>
+  <title>SCALA Workshop Registration System</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📍</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,7 +17,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">📍 Workshop Distance</div>
+    <div class="brand">📍 SCALA Workshop Registration System</div>
     <label class="venue-picker">
       <span>Input for</span>
       <select id="venueSelect" aria-label="Venue and day for new entries"></select>
@@ -62,6 +62,13 @@
             <label>Name (English)
               <input id="fNameEn" placeholder="e.g. Mr. Somchai Jaidee" autocapitalize="words">
             </label>
+            <label>Sex <small>เพศ</small>
+              <select id="fSex">
+                <option value="">–</option>
+                <option value="M">ชาย / Male</option>
+                <option value="F">หญิง / Female</option>
+              </select>
+            </label>
             <label>House no. / Moo / Village / Road
               <input id="fHouse" placeholder="e.g. 12 หมู่ 4 บ้านโนนสูง">
             </label>
@@ -85,6 +92,15 @@
           </form>
 
           <div class="card">
+            <h2>Consent <small>การยินยอม</small></h2>
+            <label class="check">
+              <input type="checkbox" id="fConsentJoin">
+              <span>ยินยอมเข้าร่วม<br><small>I agree to take part in the workshop</small></span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="fConsentPhoto">
+              <span>ยินยอมการถ่ายภาพ<br><small>I agree to be photographed</small></span>
+            </label>
             <div class="sig-head">
               <h2>Participant signature</h2>
               <button id="sigClear" class="btn small ghost" type="button">Clear</button>
@@ -137,6 +153,7 @@
         <select id="peopleFilter" aria-label="Show participants for"></select>
         <button id="exportCsv" class="btn">Export CSV</button>
         <button id="allReceipts" class="btn">All receipts (PDF)</button>
+        <button id="regSheet" class="btn">Registration sheet (PDF)</button>
       </div>
       <p id="peopleSummary" class="summary"></p>
       <button id="fillMissing" class="btn" hidden>Fill in missing road distances</button>
@@ -203,6 +220,14 @@
       </div>
 
       <div class="card">
+        <h2>Registration sheet</h2>
+        <label>Title
+          <input id="regTitle">
+        </label>
+        <p class="hint">Printed at the top of the registration sheet. Location and Date come from the venue for that day.</p>
+      </div>
+
+      <div class="card">
         <h2>Data on this device</h2>
         <p class="hint">Participants, ID photos, signatures and venues are stored in this browser only. Download a backup at the end of each day. To combine several devices, download a backup on each one and import them all on one device.</p>
         <div class="actions wrap">
@@ -260,7 +285,7 @@
   </dialog>
 
   <dialog id="readyDialog">
-    <h2>Receipt ready</h2>
+    <h2>PDF ready</h2>
     <p id="readyText" class="hint"></p>
     <div class="actions">
       <button type="button" id="readyClose" class="btn ghost">Close</button>

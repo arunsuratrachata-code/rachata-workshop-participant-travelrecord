@@ -88,7 +88,7 @@ small { color: var(--muted); font-weight: 400; }
   background: var(--accent);
   color: var(--accent-ink);
 }
-.brand { font-weight: 700; font-size: 1.05rem; white-space: nowrap; }
+.brand { font-weight: 700; font-size: 1.05rem; }
 .venue-picker {
   display: flex;
   align-items: center;
@@ -161,8 +161,11 @@ pre {
   overflow: auto;
 }
 
-.radio { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; }
-.radio input { width: 22px; min-height: 22px; height: 22px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
+.radio, .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; }
+.radio input, .check input { width: 22px; min-height: 22px; height: 22px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
+.check { font-size: 1rem; padding: 8px 0; margin-bottom: 4px; }
+.check input { width: 26px; min-height: 26px; height: 26px; margin-top: 0; }
+.card > .sig-head { margin-top: 16px; }
 .sub { border-left: 3px solid var(--accent-soft); padding-left: 12px; margin-top: 8px; }
 
 /* ---------- buttons ---------- */

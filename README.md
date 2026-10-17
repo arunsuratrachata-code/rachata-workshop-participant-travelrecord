@@ -1,13 +1,14 @@
-# Workshop Distance
+# SCALA Workshop Registration System
 
-A small web app for iPad and phone. It reads a participant's details from a Thai ID card photo, finds the home on the map, calculates the travel distance to that day's workshop venue, and produces a cash receipt (PDF) for each participant.
+A small web app for iPad and phone for the workshop registration table. It reads a participant's details from a Thai ID card photo, records their consent, finds the home on the map, calculates the travel distance to that day's workshop venue, and produces the registration sheet and a cash receipt (PDF) for each participant.
 
 Live site: <https://arunsuratrachata-code.github.io/rachata-workshop-participant-travelrecord/>
 
 - 📷 Take a photo of the ID card. The Thai name, English name (Name + Last name lines) and address are read on the device, or by Claude AI if you add an API key.
 - 🏁 Add a venue for each workshop day. The venue for today is picked automatically.
 - 📏 Shows road distance (driving route) and straight-line distance. You can drag the 🏠 pin to fix the home location.
-- ✍️ The participant signs on the screen with a finger.
+- ✅ The participant ticks participation and photo consent and signs on the screen with a finger.
+- 📋 Download the filled-in registration sheet (same columns as the paper Form_registration) for each day.
 - 🧾 Download a cash receipt PDF per participant: details, road km, round trip × rate, route map, ID photo, amount in words and signature.
 - 📄 Export participants to CSV (opens in Excel) for each day or all days.
 
@@ -27,8 +28,9 @@ To update the app later, upload the changed files again (same names replace the 
 2. **Venues tab**: add the venue for each day. Use **I'm at the venue** (GPS), search the address, paste coordinates or a Google Maps link, or tap the map. Set the date.
 3. To use the same venues on a second device, tap **Share setup link** and open the link on that device.
 4. **Input page**: check the venue at the top, then tap **Take ID card photo**. Check the names and address. The location, road route, distance and amount appear automatically. **Open route in Google Maps** shows the same trip in Google Maps.
-5. Ask the participant to sign in the **Participant signature** box on the Input page, then tap **Save participant**.
+5. Check **Sex** (filled from the title on the card). Ask the participant to tick the **Consent** boxes and sign in the **Participant signature** box, then tap **Save participant**.
 6. **Participants tab**: tap **Receipt PDF** next to a person to download their receipt, or **All receipts (PDF)** for everyone in the selected day. Use **Edit / sign** to fix details or add a missing signature or photo.
+7. **Registration sheet (PDF)** on the Participants tab prints the registration form for the selected day: No., Sex, Name, Address, Amphoe, Participation consent and Photo consent (✓ / ✗), with Location and Date from the venue. Spare numbered rows fill the last page for walk-ins. Choose a day with no participants yet to print a blank form. The title is in **Settings → Registration sheet**.
 
 If the location is rough (district or province only), drag the 🏠 pin or search a nearby village, temple or school before saving.
 
