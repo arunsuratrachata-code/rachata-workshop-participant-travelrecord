@@ -1593,8 +1593,8 @@ async function renderRouteMap(home, venue, route, w, h) {
     x.textBaseline = 'middle';
     x.fillText(label, a, b + 1);
   };
-  pin([venue.lat, venue.lng], '#0f766e', 'V');
-  pin([home.lat, home.lng], '#d97706', 'H');
+  pin([venue.lat, venue.lng], '#0f766e', 'B');
+  pin([home.lat, home.lng], '#d97706', 'A');
   setFont(x, 13);
   const attr = '© OpenStreetMap contributors';
   const aw = x.measureText(attr).width + 10;
@@ -1669,6 +1669,7 @@ async function drawReceipt(p, saved) {
   row('District:', p.amphoe);
   row('Province:', p.province);
   y += 12;
+  row('Travel from:', travelFrom(p));
   row('Travel to:', p.venueName + (p.venueDate ? ` (${fmtDate(p.venueDate)})` : ''));
   row('Road km (one way):', `${a.oneWay.toFixed(1)} km`);
   row('Road km (round trip):', `${a.roundTrip.toFixed(1)} km`);
@@ -1706,7 +1707,7 @@ async function drawReceipt(p, saved) {
   x.strokeRect(M, y, bw, bh);
   x.strokeRect(M + bw + gap, y, bw, bh);
   y += bh + 8;
-  write('H = home   V = venue', M, y, 15);
+  write('A = from participant’s address   B = to venue', M, y, 15);
   y += 24;
 
   const url = Number.isFinite(venue.lat) ? googleMapsUrl(home, venue) : '';
@@ -1754,6 +1755,17 @@ function loadJsPdf() {
     });
   }
   return jsPdfPromise;
+}
+
+// "ต.บ้านเป็ด อ.เมืองขอนแก่น จ.ขอนแก่น" (แขวง/เขต for Bangkok), the start of the trip on the receipt.
+function travelFrom(p) {
+  const bkk = canonicalProvince(p.province) === 'กรุงเทพมหานคร';
+  const t = bare(p.tambon), a = bare(p.amphoe), pr = bare(p.province);
+  return [
+    t && (bkk ? 'แขวง' : 'ต.') + t,
+    a && (bkk ? 'เขต' : 'อ.') + a,
+    pr && (bkk ? pr : 'จ.' + pr),
+  ].filter(Boolean).join(' ') || p.house;
 }
 
 function receiptFileName(p) {
