@@ -1885,11 +1885,47 @@ function drawMark(x, cx, cy, ok) {
   x.restore();
 }
 
+// Crops a signature to its ink so it fills the small consent cells.
+async function trimSignature(dataUrl) {
+  const img = await loadImg(dataUrl);
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const x = c.getContext('2d');
+  x.drawImage(img, 0, 0);
+  const d = x.getImageData(0, 0, c.width, c.height).data;
+  let minX = c.width, minY = c.height, maxX = -1, maxY = -1;
+  for (let py = 0; py < c.height; py++) {
+    for (let px = 0; px < c.width; px++) {
+      if (d[(py * c.width + px) * 4 + 3] > 20) {
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+      }
+    }
+  }
+  if (maxX < 0) return null;
+  const pad = 6;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(c.width - 1, maxX + pad); maxY = Math.min(c.height - 1, maxY + pad);
+  const out = document.createElement('canvas');
+  out.width = maxX - minX + 1;
+  out.height = maxY - minY + 1;
+  out.getContext('2d').drawImage(c, minX, minY, out.width, out.height, 0, 0, out.width, out.height);
+  return out;
+}
+
 // A4 landscape pages (150 dpi) for one venue/day; spare numbered rows fill the last page for walk-ins.
 async function drawRegistrationPages(group) {
   await loadReceiptFonts();
+  const sigs = new Map();
+  for (const p of group.people) {
+    const saved = p.hasSignature ? await files.get(p.id) : null;
+    if (saved?.signature) sigs.set(p.id, await trimSignature(saved.signature).catch(() => null));
+  }
   const W = 1754, H = 1240, M = 75, CW = W - 2 * M;
-  const FS = 16, LH = 21, PAD = 7, MIN_ROW = 34, HEAD_H = 64, TOP = 140, FOOT = 30;
+  const FS = 16, LH = 21, PAD = 7, MIN_ROW = 42, HEAD_H = 64, TOP = 140, FOOT = 30;
   const total = REG_COLS.reduce((s, c) => s + c.w, 0);
   const cols = REG_COLS.map(c => ({ ...c, px: c.w * CW / total }));
   const scratch = document.createElement('canvas').getContext('2d');
@@ -1962,7 +1998,11 @@ async function drawRegistrationPages(group) {
       cx = M;
       cols.forEach((col, ci) => {
         if (col.mark) {
-          if (r.p) drawMark(x, cx + col.px / 2, y + r.h / 2, col.mark(r.p));
+          // Consent given: the participant's signature; otherwise ✓ / ✗.
+          const ok = r.p && col.mark(r.p);
+          const sig = r.p && sigs.get(r.p.id);
+          if (ok && sig) drawContain(x, sig, cx + PAD, y + 4, col.px - 2 * PAD, r.h - 8);
+          else if (r.p) drawMark(x, cx + col.px / 2, y + r.h / 2, ok);
         } else {
           const lines = r.cells[ci];
           const top = y + (r.h - lines.length * LH) / 2 + 1;
