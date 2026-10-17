@@ -9,6 +9,9 @@
   <meta name="theme-color" content="#0f766e">
   <title>Workshop Distance</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📍</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,400;0,700;1,400&display=swap">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -40,7 +43,7 @@
             <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
             <label class="btn" for="photoPick">Choose from photos</label>
             <input id="photoPick" type="file" accept="image/*" hidden>
-            <p class="hint">Lay the card flat, fill the frame and avoid glare. The photo is not saved.</p>
+            <p class="hint">Lay the card flat, fill the frame and avoid glare. The photo is kept with the record on this device for the receipt.</p>
           </div>
 
           <div id="reading" class="card reading" hidden>
@@ -53,8 +56,11 @@
 
           <form id="personForm" class="card" autocomplete="off">
             <h2>Participant</h2>
-            <label>Name
+            <label>Name (Thai)
               <input id="fName" placeholder="ชื่อ-นามสกุล">
+            </label>
+            <label>Name (English)
+              <input id="fNameEn" placeholder="e.g. Mr. Somchai Jaidee" autocapitalize="words">
             </label>
             <label>House no. / Moo / Village / Road
               <input id="fHouse" placeholder="e.g. 12 หมู่ 4 บ้านโนนสูง">
@@ -90,6 +96,7 @@
                 <span id="straightKm">–</span> km straight line
               </div>
             </div>
+            <p id="amountText" class="amount"></p>
             <p id="levelText" class="level"></p>
             <div id="scanMap" class="map"></div>
             <p class="hint">Tap the map or drag 🏠 to correct the home location.</p>
@@ -98,6 +105,23 @@
               <button id="placeSearchBtn" class="btn" type="button">Search</button>
             </div>
             <ul id="placeResults" class="results"></ul>
+
+            <div class="receipt-extras">
+              <div class="id-photo">
+                <b>ID photo for the receipt</b>
+                <img id="idThumb" alt="ID card photo" hidden>
+                <p id="idNone" class="hint">No photo yet. Take the ID card photo above to add it.</p>
+              </div>
+              <div class="sig">
+                <div class="sig-head">
+                  <b>Participant signature</b>
+                  <button id="sigClear" class="btn small ghost" type="button">Clear</button>
+                </div>
+                <canvas id="sigPad" width="900" height="300" aria-label="Signature pad"></canvas>
+                <p class="hint">Ask the participant to sign with a finger. Leave it empty to sign the printed receipt by hand.</p>
+              </div>
+            </div>
+
             <div class="actions">
               <button id="saveBtn" class="btn primary" type="button">Save participant</button>
               <button id="saveNewBtn" class="btn" type="button" hidden>Save as new record for this day</button>
@@ -113,6 +137,7 @@
       <div class="toolbar">
         <select id="peopleFilter" aria-label="Show participants for"></select>
         <button id="exportCsv" class="btn">Export CSV</button>
+        <button id="allReceipts" class="btn">All receipts (PDF)</button>
       </div>
       <p id="peopleSummary" class="summary"></p>
       <button id="fillMissing" class="btn" hidden>Fill in missing road distances</button>
@@ -165,8 +190,22 @@
       </div>
 
       <div class="card">
+        <h2>Receipt</h2>
+        <label>Title
+          <textarea id="rTitle" rows="4"></textarea>
+        </label>
+        <label>Received from
+          <textarea id="rFrom" rows="5"></textarea>
+        </label>
+        <label>Rate (THB per km)
+          <input id="rRate" type="number" step="0.01" min="0" inputmode="decimal">
+        </label>
+        <p class="hint">Amount = round-trip road km × rate. Changes apply to every receipt you download afterwards.</p>
+      </div>
+
+      <div class="card">
         <h2>Data on this device</h2>
-        <p class="hint">Participants and venues are stored in this browser only. To combine several devices, download a backup on each one and import them all on one device.</p>
+        <p class="hint">Participants, ID photos, signatures and venues are stored in this browser only. Download a backup at the end of each day. To combine several devices, download a backup on each one and import them all on one device.</p>
         <div class="actions wrap">
           <button id="exportAllCsv" class="btn">Export all as CSV</button>
           <button id="backupBtn" class="btn">Download backup</button>
@@ -219,6 +258,15 @@
         <button type="submit" class="btn primary">Save venue</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="readyDialog">
+    <h2>Receipt ready</h2>
+    <p id="readyText" class="hint"></p>
+    <div class="actions">
+      <button type="button" id="readyClose" class="btn ghost">Close</button>
+      <a id="readyLink" class="btn primary" href="#" download>Save PDF</a>
+    </div>
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>

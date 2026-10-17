@@ -126,7 +126,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 16px; }
 
 label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: 12px; }
 
-input, select {
+input, select, textarea {
   display: block;
   width: 100%;
   margin-top: 4px;
@@ -139,7 +139,8 @@ input, select {
   border-radius: 10px;
   min-height: 44px;
 }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+textarea { resize: vertical; line-height: 1.4; }
 
 .row3 { display: grid; gap: 0 12px; grid-template-columns: 1fr; }
 @media (min-width: 600px) { .row3 { grid-template-columns: repeat(3, 1fr); } }
@@ -183,6 +184,7 @@ pre {
   -webkit-tap-highlight-color: transparent;
   margin: 0;
 }
+a.btn { text-decoration: none; }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: .6; cursor: progress; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -217,6 +219,41 @@ pre {
 .km { font-size: 2.6rem; font-weight: 800; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
 .unit { color: var(--muted); font-weight: 600; }
 .dist-alt { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.amount { margin: 8px 0 0; font-weight: 700; }
+.amount:empty { display: none; }
+
+.receipt-extras {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+@media (min-width: 600px) { .receipt-extras { grid-template-columns: 1fr 2fr; } }
+.id-photo img {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  margin-top: 6px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.sig-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#sigPad {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 1;
+  margin-top: 6px;
+  background: #fff;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  touch-action: none;
+  cursor: crosshair;
+}
 
 .level { margin: 10px 0; padding: 8px 12px; border-radius: 10px; font-size: .9rem; background: var(--surface-2); }
 .level.ok { background: var(--ok-bg); color: var(--ok-ink); }
@@ -298,6 +335,7 @@ pre {
 .item-km { text-align: right; font-variant-numeric: tabular-nums; }
 .item-km b { display: block; font-size: 1.4rem; color: var(--accent); line-height: 1.1; }
 .item-km small { display: block; font-size: .78rem; }
+.item-km b.thb { display: inline; font-size: .9rem; color: var(--text); }
 .item-actions { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
 
 .badge {

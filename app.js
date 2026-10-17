@@ -1,12 +1,21 @@
 /* Workshop Distance
- * Reads a participant's address from a Thai ID card photo, places the home on a map
- * and calculates the travel distance to the workshop venue for the selected day.
- * Everything runs in the browser; data is kept in this device's local storage.
+ * Reads a participant's address from a Thai ID card photo, places the home on a map,
+ * calculates the travel distance to the workshop venue for the selected day and
+ * produces a cash receipt (PDF) per participant.
+ * Everything runs in the browser; data is kept on this device (localStorage + IndexedDB).
  */
 
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.131.0/+esm';
+const JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving/';
+const TILE_URL = 'https://tile.openstreetmap.org/';
+
+const RECEIPT_DEFAULTS = {
+  receiptTitle: 'Participant transportation for NbS field consultation workshop under UNFA/GLO/092/UND: “Scaling up Climate Ambition on Land Use and Agriculture through Nationally Determined Contributions and National Adaptation Plans”',
+  receiptFrom: 'Food and Agriculture Organization of the United Nations\nRegional Office for Asia and the Pacific\n39 Maliwan Mansion, Phra Atit Road, Bangkok 10200, Thailand\nPhone: (+66 2) 697 4000   Fax: (+66 2) 697 4445   E-mail: FAO-RAP@fao.org',
+  rate: 5.58,
+};
 
 const PROVINCES = [
   'กรุงเทพมหานคร', 'กระบี่', 'กาญจนบุรี', 'กาฬสินธุ์', 'กำแพงเพชร', 'ขอนแก่น', 'จันทบุรี', 'ฉะเชิงเทรา',
@@ -34,9 +43,10 @@ const LEVELS = {
 const ID_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['name', 'house', 'subdistrict', 'district', 'province', 'full_address'],
+  required: ['name', 'name_en', 'house', 'subdistrict', 'district', 'province', 'full_address'],
   properties: {
     name: { type: 'string' },
+    name_en: { type: 'string' },
     house: { type: 'string' },
     subdistrict: { type: 'string' },
     district: { type: 'string' },
@@ -45,8 +55,9 @@ const ID_SCHEMA = {
   },
 };
 
-const ID_PROMPT = `This is a photo of the front of a Thai national ID card. Read the holder's name and the registered address (ที่อยู่) exactly as printed, in Thai.
-- name: the Thai full name with title (นาย / นาง / นางสาว ...).
+const ID_PROMPT = `This is a photo of the front of a Thai national ID card. Read the holder's names and the registered address (ที่อยู่) exactly as printed.
+- name: the Thai full name with title (นาย / นาง / นางสาว ...) from the ชื่อตัวและชื่อสกุล line.
+- name_en: the English name: the "Name" line (title and first name) followed by the "Last name" line, e.g. "Mr. Somchai Jaidee".
 - house: everything in the address before the subdistrict: house number, หมู่, village, soi, road.
 - subdistrict: the ตำบล or แขวง name without the prefix.
 - district: the อำเภอ or เขต name without the prefix.
@@ -63,6 +74,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const todayISO = () => new Date().toLocaleDateString('en-CA');
 const fmtKm = km => (km == null || Number.isNaN(km) ? '–' : km.toFixed(1));
+const fmtTHB = n => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function fmtDate(iso) {
@@ -116,6 +128,17 @@ function haversineKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+function loadImg(src, cors) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (cors) img.crossOrigin = 'anonymous';
+    const timer = setTimeout(() => reject(new Error('image timed out')), 10000);
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => { clearTimeout(timer); reject(new Error('image failed to load')); };
+    img.src = src;
+  });
+}
+
 /* ---------- storage ---------- */
 
 const store = {
@@ -136,10 +159,43 @@ const store = {
   },
 };
 
+// ID photos, signatures and routes are too big for localStorage, so they live in IndexedDB,
+// one entry per participant record: { id, photo, signature, route }.
+let idbPromise = null;
+function idbOpen() {
+  if (!idbPromise) {
+    idbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open('workshop-distance', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('files', { keyPath: 'id' });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    idbPromise.catch(() => { idbPromise = null; });
+  }
+  return idbPromise;
+}
+async function idbRun(mode, fn) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('files', mode);
+    const req = fn(tx.objectStore('files'));
+    tx.oncomplete = () => resolve(req?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+const files = {
+  get: id => idbRun('readonly', s => s.get(id)).catch(() => null),
+  put: rec => idbRun('readwrite', s => s.put(rec)),
+  del: id => idbRun('readwrite', s => s.delete(id)).catch(() => {}),
+  all: () => idbRun('readonly', s => s.getAll()),
+  clear: () => idbRun('readwrite', s => s.clear()).catch(() => {}),
+};
+
 const state = {
   venues: store.get('venues', []),
   people: store.get('people', []),
-  settings: Object.assign({ reader: 'ocr', apiKey: '', model: 'claude-opus-5-5' }, store.get('settings', {})),
+  settings: Object.assign({ reader: 'ocr', apiKey: '', model: 'claude-opus-5-5' }, RECEIPT_DEFAULTS, store.get('settings', {})),
   activeVenueId: store.get('activeVenue', null),
 };
 const geoCache = store.get('geocache', {});
@@ -179,7 +235,7 @@ function showTab(name) {
 }
 
 function download(filename, content, type) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
+  const url = URL.createObjectURL(content instanceof Blob ? content : new Blob([content], { type }));
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
@@ -193,7 +249,7 @@ function download(filename, content, type) {
 
 function makeMap(id) {
   const map = L.map(id).setView([13.0, 101.0], 6);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  L.tileLayer(TILE_URL + '{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
@@ -359,24 +415,42 @@ function prepareForOcr(img) {
   return c;
 }
 
-let ocrWorkerPromise = null;
+const ocrWorkers = {};
 let ocrProgress = null;
+
+function getOcrWorker(langs) {
+  const key = langs.join('+');
+  if (!ocrWorkers[key]) {
+    ocrWorkers[key] = Tesseract.createWorker(langs, 1, { logger: m => ocrProgress && ocrProgress(m) });
+    ocrWorkers[key].catch(() => { delete ocrWorkers[key]; });
+  }
+  return ocrWorkers[key];
+}
 
 async function readWithOcr(img) {
   if (!window.Tesseract) throw new Error('The text reader did not load. Check the internet connection and reload the page.');
-  if (!ocrWorkerPromise) {
-    ocrWorkerPromise = Tesseract.createWorker(['tha', 'eng'], 1, { logger: m => ocrProgress && ocrProgress(m) });
-    ocrWorkerPromise.catch(() => { ocrWorkerPromise = null; });
-  }
+  let stage = 'Reading the card…';
   ocrProgress = m => {
-    if (m.status === 'recognizing text') setProgress('Reading the card…', m.progress);
-    else if (/load/.test(m.status)) setProgress('Downloading the Thai reader (first time only)…', m.progress);
+    if (m.status === 'recognizing text') setProgress(stage, m.progress);
+    else if (/load/.test(m.status)) setProgress('Downloading the reader (first time only)…', m.progress);
   };
   try {
-    const worker = await ocrWorkerPromise;
-    setProgress('Reading the card…', 0);
-    const { data } = await worker.recognize(prepareForOcr(img));
-    return parseThaiId(data.text);
+    const prepared = prepareForOcr(img);
+    const thai = await getOcrWorker(['tha', 'eng']);
+    setProgress(stage, 0);
+    const { data } = await thai.recognize(prepared);
+    const result = parseThaiId(data.text);
+    // The Thai model often misreads the English name lines, so read them again in English only.
+    stage = 'Reading the English name…';
+    try {
+      const eng = await getOcrWorker(['eng']);
+      const { data: en } = await eng.recognize(prepared);
+      result.nameEn = parseEnglishName(en.text) || result.nameEn;
+      result.raw += '\n\n— English pass —\n' + en.text.trim();
+    } catch (err) {
+      console.warn('English pass failed', err);
+    }
+    return result;
   } finally {
     ocrProgress = null;
   }
@@ -420,6 +494,7 @@ async function readWithClaude(img) {
   const out = JSON.parse(text);
   return {
     name: out.name,
+    nameEn: out.name_en,
     house: out.house,
     tambon: out.subdistrict,
     amphoe: out.district,
@@ -430,6 +505,15 @@ async function readWithClaude(img) {
 
 const PROVINCE_MARK = /(?:จ\.|จังหวัด)\s*[ก-๙]|กรุงเทพ/;
 
+// "Name Mr. Somchai" + "Last name Jaidee" -> "Mr. Somchai Jaidee"
+function parseEnglishName(text) {
+  const lines = String(text).split('\n').map(l => l.trim()).filter(Boolean);
+  const latin = s => s.replace(/[^A-Za-z.\-' ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const last = lines.map(l => l.match(/Last\s*name\s*[:.]?\s*(.+)/i)).find(Boolean);
+  const first = lines.filter(l => !/last\s*name/i.test(l)).map(l => l.match(/(?:^|[^a-z])Name\s*[:.]?\s*(.+)/i)).find(Boolean);
+  return [first && latin(first[1]), last && latin(last[1])].filter(Boolean).join(' ');
+}
+
 function parseThaiId(text) {
   const lines = cleanThai(text).split('\n').map(l => l.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
 
@@ -439,12 +523,7 @@ function parseThaiId(text) {
     if (m) { name = m[1]; break; }
   }
   if (!name) name = lines.find(l => /^(?:นาย|นางสาว|นาง|เด็กชาย|เด็กหญิง|ด\.ช\.|ด\.ญ\.)\s*[ก-๙]/.test(l)) || '';
-  if (!name) {
-    const first = lines.filter(l => !/last\s*name/i.test(l)).map(l => l.match(/(?:^|[^a-z])Name\s+(.+)/i)).find(Boolean);
-    const last = lines.map(l => l.match(/Last\s*name\s+(.+)/i)).find(Boolean);
-    name = [first?.[1], last?.[1]].filter(Boolean).join(' ');
-  }
-  name = name.replace(/[^ก-๙a-zA-Z.\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  name = name.replace(/[^ก-๙\s.]/g, ' ').replace(/\s+/g, ' ').trim();
 
   let addr = '';
   const idx = lines.findIndex(l => /ที่\s*อยู่|ที่อยู/.test(l));
@@ -462,7 +541,7 @@ function parseThaiId(text) {
   if (pm) addr = addr.slice(0, pm.index + pm[0].length);
   addr = addr.replace(/[^ก-๙0-9a-zA-Z./\-,\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-  return { name, ...splitThaiAddress(addr), raw: text.trim() };
+  return { name, nameEn: parseEnglishName(text), ...splitThaiAddress(addr), raw: text.trim() };
 }
 
 function splitThaiAddress(addr) {
@@ -770,9 +849,67 @@ function handleSetupLink() {
   toast('Venues added', 'ok');
 }
 
+/* ---------- signature pad ---------- */
+
+const sig = { el: $('#sigPad'), ctx: $('#sigPad').getContext('2d'), empty: true, drawing: false };
+
+function setupSignaturePad() {
+  const { el, ctx } = sig;
+  const pos = e => {
+    const r = el.getBoundingClientRect();
+    return [(e.clientX - r.left) * el.width / r.width, (e.clientY - r.top) * el.height / r.height];
+  };
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    sig.drawing = true;
+    sig.empty = false;
+    const [x, y] = pos(e);
+    ctx.lineWidth = 5;
+    ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#111';
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + 0.1, y + 0.1);
+    ctx.stroke();
+  });
+  el.addEventListener('pointermove', e => {
+    if (!sig.drawing) return;
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of events.length ? events : [e]) {
+      const [x, y] = pos(ev);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  });
+  const end = () => { sig.drawing = false; };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  $('#sigClear').addEventListener('click', clearSignature);
+}
+
+function clearSignature() {
+  sig.ctx.clearRect(0, 0, sig.el.width, sig.el.height);
+  sig.empty = true;
+}
+
+async function loadSignature(dataUrl) {
+  clearSignature();
+  if (!dataUrl) return;
+  try {
+    sig.ctx.drawImage(await loadImg(dataUrl), 0, 0, sig.el.width, sig.el.height);
+    sig.empty = false;
+  } catch { /* unreadable signature: leave the pad empty */ }
+}
+
+const signatureData = () => (sig.empty ? null : sig.el.toDataURL('image/png'));
+
 /* ---------- scan screen ---------- */
 
-const scan = { editingId: null, home: null, level: '', geoLabel: '', dist: null, routePromise: null, routeToken: 0, previewUrl: null };
+const scan = {
+  editingId: null, home: null, level: '', geoLabel: '', dist: null, route: null,
+  routePromise: null, routeToken: 0, previewUrl: null, photoData: null,
+};
 let scanMap = null, homeMarker = null, venueMarker = null, routeLine = null;
 
 function ensureScanMap() {
@@ -800,6 +937,13 @@ function showResultCard() {
   ensureScanMap();
 }
 
+function showIdThumb() {
+  const img = $('#idThumb');
+  if (scan.photoData) img.src = scan.photoData; else img.removeAttribute('src');
+  img.hidden = !scan.photoData;
+  $('#idNone').hidden = !!scan.photoData;
+}
+
 function setProgress(label, p) {
   $('#readingText').textContent = label;
   $('#progressBar').style.width = Math.round(Math.max(0.05, Math.min(1, p || 0)) * 100) + '%';
@@ -808,6 +952,7 @@ function setProgress(label, p) {
 function readForm() {
   return {
     name: oneLine($('#fName').value),
+    nameEn: oneLine($('#fNameEn').value),
     house: oneLine($('#fHouse').value),
     tambon: oneLine($('#fTambon').value),
     amphoe: oneLine($('#fAmphoe').value),
@@ -817,6 +962,7 @@ function readForm() {
 
 function fillForm(r) {
   $('#fName').value = r.name || '';
+  $('#fNameEn').value = r.nameEn || '';
   $('#fHouse').value = r.house || '';
   $('#fTambon').value = r.tambon || '';
   $('#fAmphoe').value = r.amphoe || '';
@@ -840,6 +986,22 @@ async function onPhoto(e) {
   const file = e.target.files && e.target.files[0];
   e.target.value = '';
   if (!file) return;
+
+  // While editing (or after typing details by hand), a new photo only replaces the ID photo.
+  const photoOnly = !!scan.editingId
+    || (scan.home && !scan.photoData && confirm('Use this photo as the ID photo for the participant on screen? Cancel to read it as a new card.'));
+  if (photoOnly) {
+    try {
+      const img = await loadImage(file);
+      scan.photoData = toCanvas(img, 1200).toDataURL('image/jpeg', 0.8);
+      showIdThumb();
+      toast('ID photo added. Save to keep it.', 'ok');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    return;
+  }
+
   resetScan();
   const wantAI = state.settings.reader === 'ai';
   const useAI = wantAI && !!state.settings.apiKey;
@@ -849,6 +1011,8 @@ async function onPhoto(e) {
   try {
     const img = await loadImage(file);
     $('#preview').src = scan.previewUrl;
+    scan.photoData = toCanvas(img, 1200).toDataURL('image/jpeg', 0.8);
+    showIdThumb();
     const r = useAI ? await readWithClaude(img) : await readWithOcr(img);
     fillForm(r);
     if (!r.name && !r.amphoe && !r.province) {
@@ -922,6 +1086,7 @@ function setHome(ll, level, label, fit = false) {
 function clearHome() {
   scan.home = null;
   scan.dist = null;
+  scan.route = null;
   scan.routeToken++;
   homeMarker?.remove(); homeMarker = null;
   routeLine?.remove(); routeLine = null;
@@ -935,6 +1100,7 @@ function computeDistances(fit = false) {
   routeLine?.remove(); routeLine = null;
   scan.routeToken++;
   scan.routePromise = null;
+  scan.route = null;
   if (!h || !v) {
     scan.dist = null;
     renderDistances();
@@ -950,6 +1116,7 @@ function computeDistances(fit = false) {
     .then(r => {
       if (token !== scan.routeToken) return;
       Object.assign(dist, { roadKm: r.km, roadMin: r.min });
+      scan.route = r.coords;
       routeLine = L.polyline(r.coords, { color: cssVar('--accent') || '#0f766e', weight: 5, opacity: 0.7 }).addTo(scanMap);
     })
     .catch(err => { dist.error = err.message; })
@@ -963,6 +1130,7 @@ function renderDistances() {
   const d = scan.dist;
   const v = activeVenue();
   $('#straightKm').textContent = d ? fmtKm(d.straightKm) : '–';
+  $('#amountText').textContent = '';
   if (!d) {
     $('#roadKm').textContent = '–';
     $('#roadMin').textContent = scan.home && !v ? '(add a venue to calculate)' : '';
@@ -975,6 +1143,8 @@ function renderDistances() {
   } else {
     $('#roadKm').textContent = fmtKm(d.roadKm);
     $('#roadMin').textContent = `· about ${Math.round(d.roadMin)} min drive`;
+    const a = receiptAmounts({ roadKm: d.roadKm });
+    $('#amountText').textContent = `Round trip ${a.roundTrip.toFixed(1)} km × ${fmtTHB(a.rate)} THB = ${fmtTHB(a.amount)} THB`;
   }
 }
 
@@ -984,6 +1154,8 @@ function resetScan() {
   scan.level = '';
   scan.geoLabel = '';
   scan.dist = null;
+  scan.route = null;
+  scan.photoData = null;
   scan.routeToken++;
   scan.routePromise = null;
   fillForm({});
@@ -998,25 +1170,29 @@ function resetScan() {
   $('#reading').hidden = true;
   if (scan.previewUrl) { URL.revokeObjectURL(scan.previewUrl); scan.previewUrl = null; }
   $('#preview').removeAttribute('src');
+  clearSignature();
+  showIdThumb();
   renderDistances();
 }
+
+let persistAsked = false;
 
 async function saveRecord(asNew) {
   const f = readForm();
   const v = activeVenue();
   if (!v) return toast('Choose or add a venue first.', 'error');
-  if (!f.name) { toast('Enter the participant’s name.', 'error'); $('#fName').focus(); return; }
+  if (!f.name && !f.nameEn) { toast('Enter the participant’s name.', 'error'); $('#fName').focus(); return; }
   if (!scan.home) return toast('Find the home location first.', 'error');
   const existing = !asNew && scan.editingId ? state.people.find(p => p.id === scan.editingId) : null;
   if (!existing) {
-    const dup = state.people.find(p => p.venueId === v.id && bare(p.name) === bare(f.name));
-    if (dup && !confirm(`${f.name} is already recorded for this venue. Save another record?`)) return;
+    const dup = state.people.find(p => p.venueId === v.id && bare(p.name) === bare(f.name) && bare(p.nameEn) === bare(f.nameEn));
+    if (dup && !confirm(`${f.name || f.nameEn} is already recorded for this venue. Save another record?`)) return;
   }
   const btn = asNew ? $('#saveNewBtn') : $('#saveBtn');
   busy(btn, true, 'Saving…');
   if (scan.routePromise) await scan.routePromise;
-  busy(btn, false);
   const now = new Date().toISOString();
+  const signature = signatureData();
   const rec = {
     id: existing?.id || uid(),
     createdAt: existing?.createdAt || now,
@@ -1024,6 +1200,8 @@ async function saveRecord(asNew) {
     venueId: v.id,
     venueName: v.name,
     venueDate: v.date || '',
+    venueLat: v.lat,
+    venueLng: v.lng,
     ...f,
     lat: scan.home.lat,
     lng: scan.home.lng,
@@ -1032,11 +1210,25 @@ async function saveRecord(asNew) {
     straightKm: scan.dist?.straightKm ?? null,
     roadKm: scan.dist?.roadKm ?? null,
     roadMin: scan.dist?.roadMin ?? null,
+    hasPhoto: !!scan.photoData,
+    hasSignature: !!signature,
   };
+  try {
+    await files.put({ id: rec.id, photo: scan.photoData, signature, route: scan.route });
+  } catch (err) {
+    busy(btn, false);
+    toast('Could not save the ID photo and signature on this device: ' + err.message, 'error');
+    return;
+  }
+  busy(btn, false);
   if (existing) state.people[state.people.indexOf(existing)] = rec;
   else state.people.push(rec);
   if (!savePeople()) return;
-  toast(`Saved ${rec.name}: ${fmtKm(rec.roadKm ?? rec.straightKm)} km`, 'ok');
+  if (!persistAsked) {
+    persistAsked = true;
+    navigator.storage?.persist?.().catch(() => {});
+  }
+  toast(`Saved ${rec.name || rec.nameEn}: ${fmtKm(rec.roadKm ?? rec.straightKm)} km`, 'ok');
   resetScan();
   window.scrollTo(0, 0);
 }
@@ -1068,7 +1260,7 @@ async function placeSearch() {
 $('#placeSearchBtn').addEventListener('click', placeSearch);
 $('#placeSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); placeSearch(); } });
 
-function editRecord(id) {
+async function editRecord(id) {
   const p = state.people.find(x => x.id === id);
   if (!p) return;
   resetScan();
@@ -1076,12 +1268,16 @@ function editRecord(id) {
   showTab('scan');
   fillForm(p);
   scan.editingId = id;
-  $('#editName').textContent = p.name;
+  $('#editName').textContent = p.name || p.nameEn;
   $('#editBanner').hidden = false;
   $('#saveBtn').textContent = 'Update record';
   $('#saveNewBtn').hidden = false;
   showResultCard();
   setHome({ lat: p.lat, lng: p.lng }, p.level, p.geoLabel, true);
+  const saved = await files.get(id);
+  scan.photoData = saved?.photo || null;
+  showIdThumb();
+  await loadSignature(saved?.signature);
 }
 
 /* ---------- participants ---------- */
@@ -1106,29 +1302,38 @@ function renderPeople() {
   const list = filteredPeople();
   $('#peopleEmpty').hidden = list.length > 0;
   const withRoad = list.filter(p => p.roadKm != null);
-  const total = withRoad.reduce((s, p) => s + p.roadKm, 0);
+  const totalKm = withRoad.reduce((s, p) => s + p.roadKm, 0);
+  const totalTHB = withRoad.reduce((s, p) => s + receiptAmounts(p).amount, 0);
   $('#peopleSummary').textContent = list.length
     ? `${list.length} participant${list.length === 1 ? '' : 's'}` + (withRoad.length
-      ? ` · ${fmtKm(total)} km total road distance (one way) · average ${fmtKm(total / withRoad.length)} km` : '')
+      ? ` · ${fmtKm(totalKm)} km total road distance (one way) · average ${fmtKm(totalKm / withRoad.length)} km · ${fmtTHB(totalTHB)} THB in total` : '')
     : '';
   $('#fillMissing').hidden = !list.some(p => p.roadKm == null && state.venues.some(v => v.id === p.venueId));
 
   $('#peopleList').innerHTML = list.map(p => {
     const rough = p.level === 'district' || p.level === 'province';
     const place = [p.tambon, p.amphoe, p.province].filter(Boolean).join(', ');
+    const a = receiptAmounts(p);
     return `<li class="item">
       <div>
-        <div class="item-title">${esc(p.name)}</div>
+        <div class="item-title">${esc(p.name || p.nameEn)}</div>
+        ${p.name && p.nameEn ? `<div class="item-sub">${esc(p.nameEn)}</div>` : ''}
         <div class="item-sub">${esc(place || p.house)}</div>
-        <div class="item-sub muted">${esc(p.venueDate ? fmtDate(p.venueDate) + ' · ' : '')}${esc(p.venueName)}
-          ${rough ? '<span class="badge warn">Rough location</span>' : ''}</div>
+        <div class="item-sub muted">${esc(p.venueDate ? fmtDate(p.venueDate) + ' · ' : '')}${esc(p.venueName)}</div>
+        <div>
+          ${rough ? '<span class="badge warn">Rough location</span>' : ''}
+          ${p.hasPhoto ? '' : '<span class="badge warn">No ID photo</span>'}
+          ${p.hasSignature ? '<span class="badge ok">Signed</span>' : '<span class="badge warn">Not signed</span>'}
+        </div>
       </div>
       <div class="item-km">
         <b>${fmtKm(p.roadKm)}</b><small>km by road</small>
         <small>${fmtKm(p.straightKm)} km straight</small>
+        ${a ? `<small><b class="thb">${fmtTHB(a.amount)} THB</b></small>` : ''}
       </div>
       <div class="item-actions">
-        <button class="btn small" data-edit="${p.id}">Edit / check pin</button>
+        <button class="btn small primary" data-receipt="${p.id}">Receipt PDF</button>
+        <button class="btn small" data-edit="${p.id}">Edit / sign</button>
         <button class="btn small ghost danger" data-del="${p.id}">Delete</button>
       </div>
     </li>`;
@@ -1140,11 +1345,16 @@ $('#peopleFilter').addEventListener('change', renderPeople);
 $('#peopleList').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (b.dataset.receipt) {
+    const p = state.people.find(x => x.id === b.dataset.receipt);
+    downloadReceipts([p], receiptFileName(p), b);
+  }
   if (b.dataset.edit) editRecord(b.dataset.edit);
   if (b.dataset.del) {
     const p = state.people.find(x => x.id === b.dataset.del);
-    if (!confirm(`Delete ${p.name} (${p.venueName})?`)) return;
+    if (!confirm(`Delete ${p.name || p.nameEn} (${p.venueName})?`)) return;
     state.people = state.people.filter(x => x.id !== p.id);
+    files.del(p.id);
     savePeople();
     renderPeople();
   }
@@ -1155,15 +1365,21 @@ async function recalcRecords(list) {
   for (const p of list) {
     const v = state.venues.find(x => x.id === p.venueId);
     if (!v) continue;
+    p.venueLat = v.lat;
+    p.venueLng = v.lng;
     p.straightKm = haversineKm(p, v);
+    let route = null;
     try {
       const r = await routeOSRM(p, v);
       p.roadKm = r.km;
       p.roadMin = r.min;
+      route = r.coords;
     } catch {
       p.roadKm = null;
       p.roadMin = null;
     }
+    const saved = await files.get(p.id);
+    await files.put({ ...(saved || { id: p.id }), route }).catch(() => {});
     done++;
     toast(`Calculating… ${done} / ${list.length}`);
     await sleep(250);
@@ -1175,23 +1391,32 @@ async function recalcRecords(list) {
 
 $('#fillMissing').addEventListener('click', () => recalcRecords(filteredPeople().filter(p => p.roadKm == null)));
 
+function filterLabel() {
+  const f = $('#peopleFilter');
+  return f.value === 'all' ? 'all-days' : (f.selectedOptions[0]?.textContent || 'day').replace(/[^\w฀-๿-]+/g, '-');
+}
+
 function toCsv(list) {
   const cols = [
     ['Day', p => p.venueDate],
     ['Venue', p => p.venueName],
-    ['Name', p => p.name],
+    ['Name (Thai)', p => p.name],
+    ['Name (English)', p => p.nameEn],
     ['House / Moo / Road', p => p.house],
     ['Subdistrict', p => p.tambon],
     ['District', p => p.amphoe],
     ['Province', p => p.province],
-    ['Road km (one way)', p => p.roadKm == null ? '' : p.roadKm.toFixed(1)],
-    // Double the rounded one-way figure so the two columns always agree.
-    ['Road km (round trip)', p => p.roadKm == null ? '' : (Number(p.roadKm.toFixed(1)) * 2).toFixed(1)],
+    ['Road km (one way)', p => receiptAmounts(p)?.oneWay.toFixed(1) ?? ''],
+    ['Road km (round trip)', p => receiptAmounts(p)?.roundTrip.toFixed(1) ?? ''],
+    ['Rate (THB/km)', p => receiptAmounts(p)?.rate.toFixed(2) ?? ''],
+    ['Amount (THB)', p => receiptAmounts(p)?.amount.toFixed(2) ?? ''],
     ['Drive minutes (one way)', p => p.roadMin == null ? '' : Math.round(p.roadMin)],
     ['Straight-line km', p => p.straightKm == null ? '' : p.straightKm.toFixed(1)],
     ['Location accuracy', p => p.level],
     ['Home latitude', p => p.lat.toFixed(6)],
     ['Home longitude', p => p.lng.toFixed(6)],
+    ['ID photo', p => (p.hasPhoto ? 'yes' : 'no')],
+    ['Signed', p => (p.hasSignature ? 'yes' : 'no')],
     ['Recorded at', p => new Date(p.createdAt).toLocaleString('en-GB')],
   ];
   const cell = v => {
@@ -1203,18 +1428,359 @@ function toCsv(list) {
   return '﻿' + rows.map(r => r.map(cell).join(',')).join('\r\n');
 }
 
+const byDayThenTime = (a, b) => (a.venueDate || '').localeCompare(b.venueDate || '') || a.createdAt.localeCompare(b.createdAt);
+
 function exportCsv(list, label) {
   if (!list.length) return toast('Nothing to export yet.', 'error');
-  const sorted = [...list].sort((a, b) => (a.venueDate || '').localeCompare(b.venueDate || '') || a.createdAt.localeCompare(b.createdAt));
-  download(`participants-${label}-${todayISO()}.csv`, toCsv(sorted), 'text/csv;charset=utf-8');
+  download(`participants-${label}-${todayISO()}.csv`, toCsv([...list].sort(byDayThenTime)), 'text/csv;charset=utf-8');
 }
 
-$('#exportCsv').addEventListener('click', () => {
-  const f = $('#peopleFilter');
-  const label = f.value === 'all' ? 'all-days' : (f.selectedOptions[0]?.textContent || 'day').replace(/[^\w฀-๿-]+/g, '-');
-  exportCsv(filteredPeople(), label);
-});
+$('#exportCsv').addEventListener('click', () => exportCsv(filteredPeople(), filterLabel()));
 $('#exportAllCsv').addEventListener('click', () => exportCsv(state.people, 'all-days'));
+$('#allReceipts').addEventListener('click', e => {
+  const list = [...filteredPeople()].sort(byDayThenTime);
+  if (!list.length) return toast('No participants to make receipts for.', 'error');
+  downloadReceipts(list, `receipts-${filterLabel()}.pdf`, e.currentTarget);
+});
+
+/* ---------- receipts ---------- */
+
+// Round trip uses the rounded one-way figure so every number on the receipt agrees.
+function receiptAmounts(p) {
+  if (p.roadKm == null) return null;
+  const oneWay = Number(p.roadKm.toFixed(1));
+  const roundTrip = Number((oneWay * 2).toFixed(1));
+  const rate = Number(state.settings.rate) || 0;
+  const amount = Math.round(roundTrip * rate * 100) / 100;
+  return { oneWay, roundTrip, rate, amount };
+}
+
+const ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve',
+  'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+const TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+function intToWords(n) {
+  if (n === 0) return 'Zero';
+  const under1000 = m => {
+    const out = [];
+    if (m >= 100) { out.push(ONES[Math.floor(m / 100)] + ' Hundred'); m %= 100; }
+    if (m >= 20) out.push(TENS[Math.floor(m / 10)] + (m % 10 ? '-' + ONES[m % 10] : ''));
+    else if (m > 0) out.push(ONES[m]);
+    return out.join(' ');
+  };
+  const parts = [];
+  for (const [size, word] of [[1e9, 'Billion'], [1e6, 'Million'], [1e3, 'Thousand'], [1, '']]) {
+    if (n >= size) {
+      parts.push(under1000(Math.floor(n / size)) + (word ? ' ' + word : ''));
+      n %= size;
+    }
+  }
+  return parts.join(' ');
+}
+
+function amountInWords(amount) {
+  const satang = Math.round(amount * 100);
+  const baht = Math.floor(satang / 100), st = satang % 100;
+  return `${intToWords(baht)} Baht` + (st ? ` and ${intToWords(st)} Satang` : '') + ' Only';
+}
+
+const RFONT = '"Sarabun", "Leelawadee UI", Thonburi, Tahoma, sans-serif';
+let fontsReady = null;
+function loadReceiptFonts() {
+  if (!fontsReady) {
+    fontsReady = Promise.all(['400 24px', '700 24px', 'italic 400 24px'].map(f => document.fonts.load(`${f} Sarabun`, 'กขค ABC'))).catch(() => {});
+  }
+  return fontsReady;
+}
+
+function setFont(ctx, size, weight = 400, style = 'normal') {
+  ctx.font = `${style} ${weight} ${size}px ${RFONT}`;
+}
+
+const segmenter = window.Intl?.Segmenter ? new Intl.Segmenter('th', { granularity: 'word' }) : null;
+function wrapLines(ctx, text, maxW) {
+  const lines = [];
+  for (const para of String(text || '').split('\n')) {
+    const words = segmenter ? [...segmenter.segment(para)].map(s => s.segment) : para.split(/(\s+)/);
+    let line = '';
+    for (const w of words) {
+      if (line.trim() && ctx.measureText(line + w).width > maxW) {
+        lines.push(line.trimEnd());
+        line = w.trimStart();
+      } else {
+        line += w;
+      }
+    }
+    lines.push(line.trimEnd());
+  }
+  return lines;
+}
+
+function drawContain(ctx, img, x, y, w, h) {
+  const s = Math.min(w / img.width, h / img.height);
+  const dw = img.width * s, dh = img.height * s;
+  ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+}
+
+// Draws an OpenStreetMap route map (tiles + route + pins) to a canvas, for the receipt.
+async function renderRouteMap(home, venue, route, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const x = c.getContext('2d');
+  x.fillStyle = '#e8ecef';
+  x.fillRect(0, 0, w, h);
+  const line = route && route.length > 1 ? route : [[home.lat, home.lng], [venue.lat, venue.lng]];
+  const pts = [...line, [home.lat, home.lng], [venue.lat, venue.lng]];
+  const project = (lat, lng, z) => {
+    const size = 256 * 2 ** z, sin = Math.sin(lat * Math.PI / 180);
+    return [(lng + 180) / 360 * size, (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * size];
+  };
+  let z = 16, box;
+  for (; z >= 3; z--) {
+    const ps = pts.map(([a, b]) => project(a, b, z));
+    const xs = ps.map(p => p[0]), ys = ps.map(p => p[1]);
+    box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    if (box[2] - box[0] <= w * 0.8 && box[3] - box[1] <= h * 0.8) break;
+  }
+  const ox = (box[0] + box[2]) / 2 - w / 2, oy = (box[1] + box[3]) / 2 - h / 2;
+  const n = 2 ** z;
+  const jobs = [];
+  for (let tx = Math.floor(ox / 256); tx <= Math.floor((ox + w) / 256); tx++) {
+    for (let ty = Math.floor(oy / 256); ty <= Math.floor((oy + h) / 256); ty++) {
+      if (ty < 0 || ty >= n) continue;
+      const wx = ((tx % n) + n) % n;
+      jobs.push(loadImg(`${TILE_URL}${z}/${wx}/${ty}.png`, true)
+        .then(img => x.drawImage(img, tx * 256 - ox, ty * 256 - oy))
+        .catch(() => {}));
+    }
+  }
+  await Promise.all(jobs);
+
+  const px = ([lat, lng]) => { const [a, b] = project(lat, lng, z); return [a - ox, b - oy]; };
+  x.lineCap = x.lineJoin = 'round';
+  if (!(route && route.length > 1)) x.setLineDash([12, 10]);
+  for (const [width, color] of [[9, 'rgba(255,255,255,.9)'], [5, '#0f766e']]) {
+    x.lineWidth = width;
+    x.strokeStyle = color;
+    x.beginPath();
+    line.forEach((p, i) => { const [a, b] = px(p); if (i) x.lineTo(a, b); else x.moveTo(a, b); });
+    x.stroke();
+  }
+  x.setLineDash([]);
+  const pin = (p, fill, label) => {
+    const [a, b] = px(p);
+    x.beginPath();
+    x.arc(a, b, 15, 0, Math.PI * 2);
+    x.fillStyle = fill;
+    x.fill();
+    x.lineWidth = 3;
+    x.strokeStyle = '#fff';
+    x.stroke();
+    setFont(x, 17, 700);
+    x.fillStyle = '#fff';
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    x.fillText(label, a, b + 1);
+  };
+  pin([venue.lat, venue.lng], '#0f766e', 'V');
+  pin([home.lat, home.lng], '#d97706', 'H');
+  setFont(x, 13);
+  const attr = '© OpenStreetMap contributors';
+  const aw = x.measureText(attr).width + 10;
+  x.fillStyle = 'rgba(255,255,255,.85)';
+  x.fillRect(w - aw, h - 20, aw, 20);
+  x.fillStyle = '#333';
+  x.textAlign = 'right';
+  x.textBaseline = 'middle';
+  x.fillText(attr, w - 5, h - 10);
+  return c;
+}
+
+// Draws one A4 receipt (1240 x 1754 px, 150 dpi) and returns the canvas plus the Google Maps link area.
+async function drawReceipt(p, saved) {
+  await loadReceiptFonts();
+  const s = state.settings;
+  const a = receiptAmounts(p);
+  const venueRef = state.venues.find(v => v.id === p.venueId);
+  const venue = { lat: p.venueLat ?? venueRef?.lat, lng: p.venueLng ?? venueRef?.lng };
+  const home = { lat: p.lat, lng: p.lng };
+
+  const W = 1240, H = 1754, M = 100, CW = W - 2 * M, LW = 300;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const x = c.getContext('2d');
+  x.fillStyle = '#fff';
+  x.fillRect(0, 0, W, H);
+  x.textBaseline = 'top';
+  let y = 80;
+
+  const write = (str, px, py, size, weight = 400, align = 'left', style = 'normal') => {
+    setFont(x, size, weight, style);
+    x.fillStyle = '#111';
+    x.textAlign = align;
+    x.fillText(str, px, py);
+  };
+  const block = (str, px, maxW, size, lh, weight = 400, align = 'left', style = 'normal') => {
+    setFont(x, size, weight, style);
+    x.fillStyle = '#111';
+    x.textAlign = align;
+    for (const l of wrapLines(x, str, maxW)) { x.fillText(l, px, y); y += lh; }
+  };
+  const rule = () => { x.fillStyle = '#111'; x.fillRect(M, y, CW, 2); };
+  const row = (label, value, bold = false) => {
+    write(label, M, y, 21, 700);
+    setFont(x, 21, bold ? 700 : 400);
+    const lines = wrapLines(x, value || '–', CW - LW);
+    lines.forEach((l, i) => x.fillText(l, M + LW, y + i * 30));
+    y += lines.length * 30 + 6;
+  };
+
+  write('CASH RECEIPT', W / 2, y, 46, 700, 'center');
+  y += 70;
+  block(s.receiptTitle, W / 2, CW - 60, 23, 33, 400, 'center', 'italic');
+  y += 16;
+  if (p.venueDate) { write('Date: ' + fmtDate(p.venueDate), W - M, y, 21, 400, 'right'); y += 34; }
+
+  write('Received FROM', M, y, 24, 700);
+  y += 38;
+  block(s.receiptFrom, M, CW, 21, 30);
+  y += 14;
+  rule();
+  y += 20;
+
+  write('Description', M, y, 24, 700);
+  y += 40;
+  row('Name:', p.name);
+  row('Name (English):', p.nameEn);
+  row('House / Moo / Road:', p.house);
+  row('Subdistrict:', p.tambon);
+  row('District:', p.amphoe);
+  row('Province:', p.province);
+  y += 12;
+  row('Travel to:', p.venueName + (p.venueDate ? ` (${fmtDate(p.venueDate)})` : ''));
+  row('Road km (one way):', `${a.oneWay.toFixed(1)} km`);
+  row('Road km (round trip):', `${a.roundTrip.toFixed(1)} km`);
+  row('Rate estimates:', `${a.roundTrip.toFixed(1)} km × ${fmtTHB(a.rate)} THB = ${fmtTHB(a.amount)} THB`, true);
+  y += 14;
+
+  // Route map and ID photo side by side; the box height shrinks if the text above ran long.
+  const gap = 24, bw = Math.floor((CW - gap) / 2);
+  const bh = Math.max(220, Math.min(380, H - 60 - y - 400));
+  write('Route map', M, y, 19, 700);
+  write('ID card photo', M + bw + gap, y, 19, 700);
+  y += 30;
+  if (Number.isFinite(venue.lat)) x.drawImage(await renderRouteMap(home, venue, saved?.route, bw, bh), M, y);
+  if (saved?.photo) {
+    x.fillStyle = '#f2f4f6';
+    x.fillRect(M + bw + gap, y, bw, bh);
+    drawContain(x, await loadImg(saved.photo), M + bw + gap, y, bw, bh);
+  } else {
+    write('No ID photo recorded', M + bw + gap + bw / 2, y + bh / 2 - 12, 20, 400, 'center');
+  }
+  x.lineWidth = 2;
+  x.strokeStyle = '#999';
+  x.strokeRect(M, y, bw, bh);
+  x.strokeRect(M + bw + gap, y, bw, bh);
+  y += bh + 8;
+  write('H = home   V = venue', M, y, 15);
+  y += 24;
+
+  const url = `https://www.google.com/maps/dir/?api=1&origin=${home.lat.toFixed(6)},${home.lng.toFixed(6)}`
+    + `&destination=${venue.lat?.toFixed(6)},${venue.lng?.toFixed(6)}&travelmode=driving`;
+  const linkText = 'Google Maps route: ' + url;
+  let size = 15;
+  setFont(x, size);
+  while (size > 10 && x.measureText(linkText).width > CW) setFont(x, --size);
+  x.fillStyle = '#0b57d0';
+  x.textAlign = 'left';
+  x.fillText(linkText, M, y);
+  const link = { x: M, y, w: x.measureText(linkText).width, h: size + 4, url };
+  y += 32;
+  rule();
+  y += 22;
+
+  write('Amount in words:', M, y, 22, 700);
+  setFont(x, 22, 400);
+  x.fillStyle = '#111';
+  const words = wrapLines(x, amountInWords(a.amount), CW - LW);
+  words.forEach((l, i) => x.fillText(l, M + LW, y + i * 32));
+  y += words.length * 32 + 6;
+  write(`(${fmtTHB(a.amount)} THB)`, M + LW, y, 22, 700);
+  y += 56;
+
+  const sx = M + LW, sw = 520, sh = 110;
+  write('Signed:', M, y + sh - 28, 22, 700);
+  if (saved?.signature) drawContain(x, await loadImg(saved.signature), sx, y, sw, sh);
+  x.fillStyle = '#111';
+  x.fillRect(sx, y + sh + 4, sw, 2);
+  write(`( ${p.nameEn || p.name} )`, sx + sw / 2, y + sh + 14, 21, 400, 'center');
+
+  return { canvas: c, link };
+}
+
+let jsPdfPromise = null;
+function loadJsPdf() {
+  if (window.jspdf) return Promise.resolve(window.jspdf.jsPDF);
+  if (!jsPdfPromise) {
+    jsPdfPromise = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = JSPDF_URL;
+      el.onload = () => resolve(window.jspdf.jsPDF);
+      el.onerror = () => { jsPdfPromise = null; reject(new Error('could not load the PDF tool; check the internet connection')); };
+      document.head.appendChild(el);
+    });
+  }
+  return jsPdfPromise;
+}
+
+function receiptFileName(p) {
+  const who = (p.nameEn || p.name || 'participant').replace(/[\\/:*?"<>|.]+/g, '').trim().replace(/\s+/g, '_');
+  return `receipt-${p.venueDate || 'no-date'}-${who}.pdf`;
+}
+
+async function downloadReceipts(list, filename, btn) {
+  const missing = list.filter(p => p.roadKm == null);
+  if (missing.length) {
+    return toast(`${missing.length} participant(s) have no road distance yet. Use “Fill in missing road distances” first.`, 'error');
+  }
+  busy(btn, true, 'Preparing…');
+  try {
+    const jsPDF = await loadJsPdf();
+    const doc = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
+    for (let i = 0; i < list.length; i++) {
+      if (list.length > 1) btn.textContent = `Preparing ${i + 1} / ${list.length}…`;
+      const { canvas, link } = await drawReceipt(list[i], await files.get(list[i].id));
+      if (i) doc.addPage();
+      doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', 0, 0, 210, 297);
+      const k = 210 / canvas.width;
+      doc.link(link.x * k, link.y * k, link.w * k, link.h * k, { url: link.url });
+    }
+    const blob = doc.output('blob');
+    // Safari only allows a download straight from a tap; after a slow build, ask for one more tap.
+    if (navigator.userActivation?.isActive) download(filename, blob);
+    else showReady(filename, blob, list.length);
+  } catch (err) {
+    console.error(err);
+    toast('Could not make the receipt: ' + err.message, 'error');
+  } finally {
+    busy(btn, false);
+  }
+}
+
+let readyUrl = null;
+function showReady(filename, blob, count) {
+  if (readyUrl) URL.revokeObjectURL(readyUrl);
+  readyUrl = URL.createObjectURL(blob);
+  const a = $('#readyLink');
+  a.href = readyUrl;
+  a.download = filename;
+  $('#readyText').textContent = `${filename} (${count} page${count === 1 ? '' : 's'})`;
+  $('#readyDialog').showModal();
+}
+$('#readyLink').addEventListener('click', () => setTimeout(() => $('#readyDialog').close(), 300));
+$('#readyClose').addEventListener('click', () => $('#readyDialog').close());
 
 /* ---------- settings ---------- */
 
@@ -1223,6 +1789,9 @@ function renderSettings() {
   $('#aiSettings').hidden = state.settings.reader !== 'ai';
   $('#apiKey').value = state.settings.apiKey;
   $('#model').value = state.settings.model;
+  $('#rTitle').value = state.settings.receiptTitle;
+  $('#rFrom').value = state.settings.receiptFrom;
+  $('#rRate').value = state.settings.rate;
 }
 
 $$('input[name="reader"]').forEach(r => r.addEventListener('change', () => {
@@ -1232,10 +1801,26 @@ $$('input[name="reader"]').forEach(r => r.addEventListener('change', () => {
 }));
 $('#apiKey').addEventListener('change', e => { state.settings.apiKey = e.target.value.trim(); saveSettings(); toast('API key saved on this device', 'ok'); });
 $('#model').addEventListener('change', e => { state.settings.model = e.target.value; saveSettings(); });
+$('#rTitle').addEventListener('change', e => { state.settings.receiptTitle = e.target.value.trim(); saveSettings(); toast('Receipt title saved', 'ok'); });
+$('#rFrom').addEventListener('change', e => { state.settings.receiptFrom = e.target.value.trim(); saveSettings(); toast('Receipt address saved', 'ok'); });
+$('#rRate').addEventListener('change', e => {
+  const rate = parseFloat(e.target.value);
+  if (!(rate >= 0)) { toast('Enter a valid rate.', 'error'); renderSettings(); return; }
+  state.settings.rate = rate;
+  saveSettings();
+  toast(`Rate set to ${fmtTHB(rate)} THB per km`, 'ok');
+});
 
-$('#backupBtn').addEventListener('click', () => {
-  const data = { app: 'workshop-distance', version: 1, exportedAt: new Date().toISOString(), venues: state.venues, people: state.people };
-  download(`workshop-distance-backup-${todayISO()}.json`, JSON.stringify(data, null, 1), 'application/json');
+$('#backupBtn').addEventListener('click', async e => {
+  const btn = e.currentTarget;
+  busy(btn, true, 'Preparing…');
+  try {
+    const all = await files.all().catch(() => []);
+    const data = { app: 'workshop-distance', version: 2, exportedAt: new Date().toISOString(), venues: state.venues, people: state.people, files: all };
+    download(`workshop-distance-backup-${todayISO()}.json`, JSON.stringify(data), 'application/json');
+  } finally {
+    busy(btn, false);
+  }
 });
 
 $('#restoreInput').addEventListener('change', async e => {
@@ -1252,6 +1837,7 @@ $('#restoreInput').addEventListener('change', async e => {
     });
     merge(state.venues, data.venues);
     merge(state.people, data.people);
+    for (const f of data.files || []) await files.put(f);
     savePeople();
     saveVenues();
     renderPeople();
@@ -1261,19 +1847,21 @@ $('#restoreInput').addEventListener('change', async e => {
   }
 });
 
-$('#clearPeople').addEventListener('click', () => {
+$('#clearPeople').addEventListener('click', async () => {
   if (!state.people.length) return;
-  if (!confirm(`Delete all ${state.people.length} participant records from this device? Export a CSV or backup first if you need them.`)) return;
+  if (!confirm(`Delete all ${state.people.length} participant records, ID photos and signatures from this device? Download a backup first if you need them.`)) return;
   state.people = [];
+  await files.clear();
   savePeople();
   renderPeople();
   renderVenues();
   toast('Participants deleted');
 });
 
-$('#clearAll').addEventListener('click', () => {
-  if (!confirm('Delete all participants, venues, settings and the saved API key from this device?')) return;
+$('#clearAll').addEventListener('click', async () => {
+  if (!confirm('Delete all participants, ID photos, signatures, venues, settings and the saved API key from this device?')) return;
   ['venues', 'people', 'settings', 'activeVenue', 'geocache'].forEach(k => { try { localStorage.removeItem('wd.' + k); } catch { /* ignore */ } });
+  await files.clear();
   location.reload();
 });
 
@@ -1285,6 +1873,7 @@ document.addEventListener('click', e => {
 });
 
 $('#provinceList').innerHTML = PROVINCES.map(p => `<option value="${p}">`).join('');
+setupSignaturePad();
 const todays = sortedVenues().find(v => v.date === todayISO());
 if (todays) state.activeVenueId = todays.id;
 handleSetupLink();
@@ -1293,3 +1882,4 @@ renderVenues();
 renderPeople();
 renderSettings();
 renderDistances();
+showIdThumb();
