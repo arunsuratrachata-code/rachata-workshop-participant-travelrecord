@@ -368,14 +368,21 @@ function renderResults(ul, results, onPick) {
 
 /* ---------- routing (OSRM) ---------- */
 
+// Full geometry so the line follows the roads; the simplified one cuts straight across on long trips.
 async function routeOSRM(a, b) {
-  const url = `${OSRM_URL}${a.lng},${a.lat};${b.lng},${b.lat}?overview=simplified&geometries=geojson`;
+  const url = `${OSRM_URL}${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`routing returned ${res.status}`);
   const j = await res.json();
   if (j.code !== 'Ok' || !j.routes?.length) throw new Error(j.message || 'no route found');
   const r = j.routes[0];
-  return { km: r.distance / 1000, min: r.duration / 60, coords: r.geometry.coordinates.map(([x, y]) => [y, x]) };
+  const coords = r.geometry.coordinates.map(([x, y]) => [+y.toFixed(5), +x.toFixed(5)]);
+  return { km: r.distance / 1000, min: r.duration / 60, coords };
+}
+
+function googleMapsUrl(home, venue) {
+  return `https://www.google.com/maps/dir/?api=1&origin=${home.lat.toFixed(6)},${home.lng.toFixed(6)}`
+    + `&destination=${venue.lat.toFixed(6)},${venue.lng.toFixed(6)}&travelmode=driving`;
 }
 
 /* ---------- reading the ID card ---------- */
@@ -614,13 +621,13 @@ function renderVenues() {
       <div>
         <div class="item-title">${esc(v.name)}
           ${v.date === today ? '<span class="badge ok">Today</span>' : ''}
-          ${active ? '<span class="badge">Scanning for this</span>' : ''}</div>
+          ${active ? '<span class="badge">Current venue</span>' : ''}</div>
         <div class="item-sub">${v.date ? esc(fmtDate(v.date)) : 'No date'} · ${n} participant${n === 1 ? '' : 's'}</div>
         <div class="item-sub muted">${esc(v.address || `${v.lat.toFixed(5)}, ${v.lng.toFixed(5)}`)}</div>
       </div>
       <div></div>
       <div class="item-actions">
-        ${active ? '' : `<button class="btn small" data-use="${v.id}">Scan for this venue</button>`}
+        ${active ? '' : `<button class="btn small" data-use="${v.id}">Use for input</button>`}
         <button class="btn small" data-edit="${v.id}">Edit</button>
         <button class="btn small ghost danger" data-del="${v.id}">Delete</button>
       </div>
@@ -631,7 +638,7 @@ function renderVenues() {
 $('#venueList').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.use) { setActiveVenue(b.dataset.use); toast('New scans will use this venue'); }
+  if (b.dataset.use) { setActiveVenue(b.dataset.use); toast('New entries will use this venue'); }
   if (b.dataset.edit) openVenueDialog(state.venues.find(v => v.id === b.dataset.edit));
   if (b.dataset.del) {
     const v = state.venues.find(x => x.id === b.dataset.del);
@@ -904,7 +911,7 @@ async function loadSignature(dataUrl) {
 
 const signatureData = () => (sig.empty ? null : sig.el.toDataURL('image/png'));
 
-/* ---------- scan screen ---------- */
+/* ---------- input screen ---------- */
 
 const scan = {
   editingId: null, home: null, level: '', geoLabel: '', dist: null, route: null,
@@ -1131,6 +1138,9 @@ function renderDistances() {
   const v = activeVenue();
   $('#straightKm').textContent = d ? fmtKm(d.straightKm) : '–';
   $('#amountText').textContent = '';
+  const gmaps = $('#gmapsLink');
+  gmaps.hidden = !(scan.home && v);
+  if (scan.home && v) gmaps.href = googleMapsUrl(scan.home, v);
   if (!d) {
     $('#roadKm').textContent = '–';
     $('#roadMin').textContent = scan.home && !v ? '(add a venue to calculate)' : '';
@@ -1214,7 +1224,7 @@ async function saveRecord(asNew) {
     hasSignature: !!signature,
   };
   try {
-    await files.put({ id: rec.id, photo: scan.photoData, signature, route: scan.route });
+    await files.put({ id: rec.id, photo: scan.photoData, signature, route: scan.route, routeFull: !!scan.route });
   } catch (err) {
     busy(btn, false);
     toast('Could not save the ID photo and signature on this device: ' + err.message, 'error');
@@ -1379,7 +1389,7 @@ async function recalcRecords(list) {
       p.roadMin = null;
     }
     const saved = await files.get(p.id);
-    await files.put({ ...(saved || { id: p.id }), route }).catch(() => {});
+    await files.put({ ...(saved || { id: p.id }), route, routeFull: !!route }).catch(() => {});
     done++;
     toast(`Calculating… ${done} / ${list.length}`);
     await sleep(250);
@@ -1671,7 +1681,19 @@ async function drawReceipt(p, saved) {
   write('Route map', M, y, 19, 700);
   write('ID card photo', M + bw + gap, y, 19, 700);
   y += 30;
-  if (Number.isFinite(venue.lat)) x.drawImage(await renderRouteMap(home, venue, saved?.route, bw, bh), M, y);
+  if (Number.isFinite(venue.lat)) {
+    // Records saved before full routes were kept only have a coarse line: fetch the full route once.
+    let route = saved?.routeFull ? saved.route : null;
+    if (!route) {
+      try {
+        route = (await routeOSRM(home, venue)).coords;
+        await files.put({ ...(saved || {}), id: p.id, route, routeFull: true }).catch(() => {});
+      } catch {
+        route = saved?.route;
+      }
+    }
+    x.drawImage(await renderRouteMap(home, venue, route, bw, bh), M, y);
+  }
   if (saved?.photo) {
     x.fillStyle = '#f2f4f6';
     x.fillRect(M + bw + gap, y, bw, bh);
@@ -1687,8 +1709,7 @@ async function drawReceipt(p, saved) {
   write('H = home   V = venue', M, y, 15);
   y += 24;
 
-  const url = `https://www.google.com/maps/dir/?api=1&origin=${home.lat.toFixed(6)},${home.lng.toFixed(6)}`
-    + `&destination=${venue.lat?.toFixed(6)},${venue.lng?.toFixed(6)}&travelmode=driving`;
+  const url = Number.isFinite(venue.lat) ? googleMapsUrl(home, venue) : '';
   const linkText = 'Google Maps route: ' + url;
   let size = 15;
   setFont(x, size);

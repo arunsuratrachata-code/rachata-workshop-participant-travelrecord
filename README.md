@@ -26,8 +26,8 @@ To update the app later, upload the changed files again (same names replace the 
 1. **Settings → Receipt**: check the title, the "Received from" text and the rate (default 5.58 THB per km).
 2. **Venues tab**: add the venue for each day. Use **I'm at the venue** (GPS), search the address, paste coordinates or a Google Maps link, or tap the map. Set the date.
 3. To use the same venues on a second device, tap **Share setup link** and open the link on that device.
-4. **Scan tab**: check the venue at the top, then tap **Take ID card photo**. Check the names and address. The location, distance and amount appear automatically.
-5. Ask the participant to sign in the signature box, then tap **Save participant**.
+4. **Input page**: check the venue at the top, then tap **Take ID card photo**. Check the names and address. The location, road route, distance and amount appear automatically. **Open route in Google Maps** shows the same trip in Google Maps.
+5. Ask the participant to sign in the **Participant signature** box on the Input page, then tap **Save participant**.
 6. **Participants tab**: tap **Receipt PDF** next to a person to download their receipt, or **All receipts (PDF)** for everyone in the selected day. Use **Edit / sign** to fix details or add a missing signature or photo.
 
 If the location is rough (district or province only), drag the 🏠 pin or search a nearby village, temple or school before saving.

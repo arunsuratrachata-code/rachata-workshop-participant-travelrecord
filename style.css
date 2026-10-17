@@ -223,15 +223,8 @@ a.btn { text-decoration: none; }
 .amount { margin: 8px 0 0; font-weight: 700; }
 .amount:empty { display: none; }
 
-.receipt-extras {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: 1fr;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-@media (min-width: 600px) { .receipt-extras { grid-template-columns: 1fr 2fr; } }
+#gmapsLink { width: 100%; margin-top: 4px; }
+.id-photo { margin-top: 14px; }
 .id-photo img {
   display: block;
   width: 100%;
@@ -242,6 +235,7 @@ a.btn { text-decoration: none; }
   background: var(--surface-2);
 }
 .sig-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sig-head h2 { margin: 0; }
 #sigPad {
   display: block;
   width: 100%;

@@ -19,14 +19,14 @@
   <header class="topbar">
     <div class="brand">📍 Workshop Distance</div>
     <label class="venue-picker">
-      <span>Scanning for</span>
-      <select id="venueSelect" aria-label="Venue and day for new scans"></select>
+      <span>Input for</span>
+      <select id="venueSelect" aria-label="Venue and day for new entries"></select>
     </label>
   </header>
 
   <main>
     <!-- ============ SCAN ============ -->
-    <section id="tab-scan" class="tab active" aria-label="Scan">
+    <section id="tab-scan" class="tab active" aria-label="Input">
       <div id="noVenueNote" class="note warn" hidden>
         Start by adding the workshop venue for each day.
         <button class="btn small" data-goto="venues">Add venue</button>
@@ -83,6 +83,20 @@
             </details>
             <button type="submit" class="btn primary" id="findBtn">Find location &amp; distance</button>
           </form>
+
+          <div class="card">
+            <div class="sig-head">
+              <h2>Participant signature</h2>
+              <button id="sigClear" class="btn small ghost" type="button">Clear</button>
+            </div>
+            <canvas id="sigPad" width="900" height="300" aria-label="Signature pad"></canvas>
+            <p class="hint">Ask the participant to sign with a finger. Leave it empty to sign the printed receipt by hand.</p>
+            <div class="id-photo">
+              <b>ID photo for the receipt</b>
+              <img id="idThumb" alt="ID card photo" hidden>
+              <p id="idNone" class="hint">No photo yet. Take the ID card photo above to add it.</p>
+            </div>
+          </div>
         </div>
 
         <div class="scan-col">
@@ -105,22 +119,7 @@
               <button id="placeSearchBtn" class="btn" type="button">Search</button>
             </div>
             <ul id="placeResults" class="results"></ul>
-
-            <div class="receipt-extras">
-              <div class="id-photo">
-                <b>ID photo for the receipt</b>
-                <img id="idThumb" alt="ID card photo" hidden>
-                <p id="idNone" class="hint">No photo yet. Take the ID card photo above to add it.</p>
-              </div>
-              <div class="sig">
-                <div class="sig-head">
-                  <b>Participant signature</b>
-                  <button id="sigClear" class="btn small ghost" type="button">Clear</button>
-                </div>
-                <canvas id="sigPad" width="900" height="300" aria-label="Signature pad"></canvas>
-                <p class="hint">Ask the participant to sign with a finger. Leave it empty to sign the printed receipt by hand.</p>
-              </div>
-            </div>
+            <a id="gmapsLink" class="btn" target="_blank" rel="noopener" hidden>🗺️ Open route in Google Maps</a>
 
             <div class="actions">
               <button id="saveBtn" class="btn primary" type="button">Save participant</button>
@@ -142,7 +141,7 @@
       <p id="peopleSummary" class="summary"></p>
       <button id="fillMissing" class="btn" hidden>Fill in missing road distances</button>
       <ul id="peopleList" class="list"></ul>
-      <p id="peopleEmpty" class="empty">No participants yet. Scan an ID card to add one.</p>
+      <p id="peopleEmpty" class="empty">No participants yet. Add one on the Input page.</p>
     </section>
 
     <!-- ============ VENUES ============ -->
@@ -226,7 +225,7 @@
   </main>
 
   <nav class="tabbar" aria-label="Sections">
-    <button data-goto="scan" aria-current="page"><span>📷</span>Scan</button>
+    <button data-goto="scan" aria-current="page"><span>📝</span>Input</button>
     <button data-goto="people"><span>👥</span>Participants</button>
     <button data-goto="venues"><span>🏁</span>Venues</button>
     <button data-goto="settings"><span>⚙️</span>Settings</button>
