@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Workshop Distance">
+  <meta name="theme-color" content="#0f766e">
+  <title>Workshop Distance</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📍</text></svg>">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📍 Workshop Distance</div>
+    <label class="venue-picker">
+      <span>Scanning for</span>
+      <select id="venueSelect" aria-label="Venue and day for new scans"></select>
+    </label>
+  </header>
+
+  <main>
+    <!-- ============ SCAN ============ -->
+    <section id="tab-scan" class="tab active" aria-label="Scan">
+      <div id="noVenueNote" class="note warn" hidden>
+        Start by adding the workshop venue for each day.
+        <button class="btn small" data-goto="venues">Add venue</button>
+      </div>
+      <div id="editBanner" class="note" hidden>
+        Editing <b id="editName"></b>
+        <button id="cancelEdit" class="btn small ghost" type="button">Cancel</button>
+      </div>
+
+      <div class="scan-grid">
+        <div class="scan-col">
+          <div class="card capture">
+            <label class="btn primary big" for="photoInput">📷 Take ID card photo</label>
+            <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
+            <label class="btn" for="photoPick">Choose from photos</label>
+            <input id="photoPick" type="file" accept="image/*" hidden>
+            <p class="hint">Lay the card flat, fill the frame and avoid glare. The photo is not saved.</p>
+          </div>
+
+          <div id="reading" class="card reading" hidden>
+            <img id="preview" alt="ID card photo">
+            <div class="reading-body">
+              <p id="readingText">Reading…</p>
+              <div class="progress"><div id="progressBar"></div></div>
+            </div>
+          </div>
+
+          <form id="personForm" class="card" autocomplete="off">
+            <h2>Participant</h2>
+            <label>Name
+              <input id="fName" placeholder="ชื่อ-นามสกุล">
+            </label>
+            <label>House no. / Moo / Village / Road
+              <input id="fHouse" placeholder="e.g. 12 หมู่ 4 บ้านโนนสูง">
+            </label>
+            <div class="row3">
+              <label>Subdistrict <small>ตำบล / แขวง</small>
+                <input id="fTambon">
+              </label>
+              <label>District <small>อำเภอ / เขต</small>
+                <input id="fAmphoe">
+              </label>
+              <label>Province <small>จังหวัด</small>
+                <input id="fProvince" list="provinceList">
+              </label>
+            </div>
+            <datalist id="provinceList"></datalist>
+            <details id="rawBox" hidden>
+              <summary>Text read from the card</summary>
+              <pre id="rawText"></pre>
+            </details>
+            <button type="submit" class="btn primary" id="findBtn">Find location &amp; distance</button>
+          </form>
+        </div>
+
+        <div class="scan-col">
+          <div id="resultCard" class="card result" hidden>
+            <div class="dist">
+              <div class="dist-main">
+                <span id="roadKm" class="km">–</span>
+                <span class="unit">km by road <span id="roadMin"></span></span>
+              </div>
+              <div class="dist-alt">
+                <span id="straightKm">–</span> km straight line
+              </div>
+            </div>
+            <p id="levelText" class="level"></p>
+            <div id="scanMap" class="map"></div>
+            <p class="hint">Tap the map or drag 🏠 to correct the home location.</p>
+            <div class="search-row">
+              <input id="placeSearch" placeholder="Search a nearby place (village, temple, school)…">
+              <button id="placeSearchBtn" class="btn" type="button">Search</button>
+            </div>
+            <ul id="placeResults" class="results"></ul>
+            <div class="actions">
+              <button id="saveBtn" class="btn primary" type="button">Save participant</button>
+              <button id="saveNewBtn" class="btn" type="button" hidden>Save as new record for this day</button>
+              <button id="clearBtn" class="btn ghost" type="button">Clear</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PARTICIPANTS ============ -->
+    <section id="tab-people" class="tab" aria-label="Participants">
+      <div class="toolbar">
+        <select id="peopleFilter" aria-label="Show participants for"></select>
+        <button id="exportCsv" class="btn">Export CSV</button>
+      </div>
+      <p id="peopleSummary" class="summary"></p>
+      <button id="fillMissing" class="btn" hidden>Fill in missing road distances</button>
+      <ul id="peopleList" class="list"></ul>
+      <p id="peopleEmpty" class="empty">No participants yet. Scan an ID card to add one.</p>
+    </section>
+
+    <!-- ============ VENUES ============ -->
+    <section id="tab-venues" class="tab" aria-label="Venues">
+      <div class="toolbar">
+        <h2>Venues by day</h2>
+        <button id="addVenue" class="btn primary">+ Add venue</button>
+      </div>
+      <ul id="venueList" class="list"></ul>
+      <p id="venueEmpty" class="empty">No venues yet. Add one for each workshop day; the venue for today is picked automatically.</p>
+
+      <div class="card">
+        <h3>Use the same venues on another iPad or phone</h3>
+        <p class="hint">Send this link to the other device and open it there. It contains only the venue list, no participant data.</p>
+        <button id="shareSetup" class="btn">Share setup link</button>
+        <input id="setupLink" readonly hidden>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section id="tab-settings" class="tab" aria-label="Settings">
+      <div class="card">
+        <h2>How to read the ID card</h2>
+        <label class="radio">
+          <input type="radio" name="reader" value="ocr">
+          <span><b>On-device reader</b> (free). The photo never leaves the device. Works best with a sharp, glare-free photo; check the result.</span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="reader" value="ai">
+          <span><b>Claude AI reader</b> (more accurate). Needs an Anthropic API key; the photo is sent to Anthropic to be read.</span>
+        </label>
+        <div id="aiSettings" class="sub" hidden>
+          <label>Anthropic API key
+            <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+          </label>
+          <label>Model
+            <select id="model">
+              <option value="claude-opus-5-5">Claude Opus 5.5 (most accurate, about 2 US cents per card)</option>
+              <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (about 1 US cent per card)</option>
+              <option value="claude-haiku-5-5">Claude Haiku 5.5 (cheapest, well under 1 cent per card)</option>
+            </select>
+          </label>
+          <p class="hint">The key is kept only on this device. Anyone using this device can use it, so remove it after the workshop. Check that sending ID photos to an outside service is allowed by your organisation's data policy (PDPA).</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Data on this device</h2>
+        <p class="hint">Participants and venues are stored in this browser only. To combine several devices, download a backup on each one and import them all on one device.</p>
+        <div class="actions wrap">
+          <button id="exportAllCsv" class="btn">Export all as CSV</button>
+          <button id="backupBtn" class="btn">Download backup</button>
+          <label class="btn" for="restoreInput">Import backup</label>
+          <input id="restoreInput" type="file" accept="application/json,.json" hidden>
+        </div>
+        <div class="actions wrap">
+          <button id="clearPeople" class="btn ghost danger">Delete all participants</button>
+          <button id="clearAll" class="btn ghost danger">Delete everything</button>
+        </div>
+      </div>
+
+      <div class="card about">
+        <h2>About the distances</h2>
+        <p class="hint">Road distance is the shortest driving route from OpenStreetMap (OSRM). Straight line is the distance as the crow flies. Home locations come from the address on the card: usually the subdistrict (ตำบล) centre unless the village is found, so check the pin when an exact distance matters.</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="Sections">
+    <button data-goto="scan" aria-current="page"><span>📷</span>Scan</button>
+    <button data-goto="people"><span>👥</span>Participants</button>
+    <button data-goto="venues"><span>🏁</span>Venues</button>
+    <button data-goto="settings"><span>⚙️</span>Settings</button>
+  </nav>
+
+  <dialog id="venueDialog">
+    <form id="venueForm" autocomplete="off">
+      <h2 id="venueDialogTitle">Add venue</h2>
+      <label>Venue name
+        <input id="vName" placeholder="e.g. Provincial Hall, meeting room 2">
+      </label>
+      <label>Date <small>(optional)</small>
+        <input id="vDate" type="date">
+      </label>
+      <fieldset>
+        <legend>Location</legend>
+        <button type="button" id="vHere" class="btn">📍 I'm at the venue: use my current location</button>
+        <div class="search-row">
+          <input id="vSearch" placeholder="Search address or place name">
+          <button type="button" id="vSearchBtn" class="btn">Search</button>
+        </div>
+        <ul id="vResults" class="results"></ul>
+        <input id="vCoords" placeholder="…or paste coordinates or a Google Maps link">
+        <div id="venueMap" class="map small"></div>
+        <p id="vCoordText" class="hint">Tap the map to place the venue.</p>
+      </fieldset>
+      <div class="actions">
+        <button type="button" id="vCancel" class="btn ghost">Cancel</button>
+        <button type="submit" class="btn primary">Save venue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" defer></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
