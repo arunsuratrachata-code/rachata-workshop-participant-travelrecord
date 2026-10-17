@@ -1218,6 +1218,8 @@ async function saveRecord(asNew) {
     if (dup && !confirm(`${f.name || f.nameEn} is already recorded for this venue. Save another record?`)) return;
   }
   if (!f.consentJoin && !confirm('Participation consent (ยินยอมเข้าร่วม) is not ticked. Save anyway?')) return;
+  if ((f.consentJoin || f.consentPhoto) && sig.empty
+    && !confirm('Consent is ticked but the participant has not signed. Save without a signature? (They can sign the printed sheet by hand.)')) return;
   const btn = asNew ? $('#saveNewBtn') : $('#saveBtn');
   busy(btn, true, 'Saving…');
   if (scan.routePromise) await scan.routePromise;
@@ -1846,41 +1848,31 @@ $('#readyClose').addEventListener('click', () => $('#readyDialog').close());
 
 /* ---------- registration sheet ---------- */
 
-// Columns and relative widths follow the paper form (Form_registration.docx).
+// Columns follow the paper form (Form_registration.docx), with the address split like the Input page.
+// w is the relative column width.
 const REG_COLS = [
-  { en: 'No.', th: 'ลำดับ', w: 692, center: true, always: true, text: (p, n) => String(n) },
-  { en: 'Sex', th: 'เพศ', w: 625, center: true, text: p => ({ M: 'M / ชาย', F: 'F / หญิง' }[p.sex] || '') },
-  { en: 'Name', th: 'ชื่อ นามสกุล', w: 4115, text: p => [p.name, p.name && p.nameEn ? `(${p.nameEn})` : p.nameEn].filter(Boolean).join(' ') },
-  { en: 'Address', th: 'ที่อยู่', w: 2262, text: p => regAddress(p) },
-  { en: 'Amphoe', th: 'อำเภอ', w: 2263, text: p => bare(p.amphoe) },
-  { en: 'Participation consent', th: 'ยินยอมเข้าร่วม', w: 2265, mark: p => p.consentJoin },
-  { en: 'Photo consent', th: 'ยินยอมการถ่ายภาพ', w: 2263, mark: p => p.consentPhoto },
+  { en: 'No.', th: 'ลำดับ', w: 600, center: true, always: true, text: (p, n) => String(n) },
+  { en: 'Sex', th: 'เพศ', w: 700, center: true, text: p => ({ M: 'M / ชาย', F: 'F / หญิง' }[p.sex] || '') },
+  { en: 'Name', th: 'ชื่อ นามสกุล', w: 3400, text: p => [p.name, p.name && p.nameEn ? `(${p.nameEn})` : p.nameEn].filter(Boolean).join(' ') },
+  { en: 'House no. / Moo / Village / Road', th: 'บ้านเลขที่ / หมู่ / หมู่บ้าน / ถนน', w: 2200, text: p => p.house },
+  { en: 'Subdistrict', th: 'ตำบล / แขวง', w: 1450, text: p => bare(p.tambon) },
+  { en: 'District', th: 'อำเภอ / เขต', w: 1450, text: p => bare(p.amphoe) },
+  { en: 'Province', th: 'จังหวัด', w: 1350, text: p => canonicalProvince(p.province) },
+  { en: 'Participation consent', th: 'ยินยอมเข้าร่วม', w: 2100, mark: p => p.consentJoin },
+  { en: 'Photo consent', th: 'ยินยอมการถ่ายภาพ', w: 2100, mark: p => p.consentPhoto },
 ];
 
-function regAddress(p) {
-  const bkk = canonicalProvince(p.province) === 'กรุงเทพมหานคร';
-  const t = bare(p.tambon);
-  return [p.house, t && (bkk ? 'แขวง' : 'ต.') + t].filter(Boolean).join(' ');
-}
-
-// ✓ for yes, ✗ for no, nothing when the record predates the consent questions.
-function drawMark(x, cx, cy, ok) {
-  if (ok == null) return;
+// ✗ for consent not given.
+function drawCross(x, cx, cy) {
   x.save();
   x.lineWidth = 3.5;
-  x.lineCap = x.lineJoin = 'round';
+  x.lineCap = 'round';
   x.strokeStyle = '#111';
   x.beginPath();
-  if (ok) {
-    x.moveTo(cx - 10, cy);
-    x.lineTo(cx - 3, cy + 8);
-    x.lineTo(cx + 11, cy - 9);
-  } else {
-    x.moveTo(cx - 8, cy - 8);
-    x.lineTo(cx + 8, cy + 8);
-    x.moveTo(cx + 8, cy - 8);
-    x.lineTo(cx - 8, cy + 8);
-  }
+  x.moveTo(cx - 8, cy - 8);
+  x.lineTo(cx + 8, cy + 8);
+  x.moveTo(cx + 8, cy - 8);
+  x.lineTo(cx - 8, cy + 8);
   x.stroke();
   x.restore();
 }
@@ -1921,14 +1913,23 @@ async function drawRegistrationPages(group) {
   await loadReceiptFonts();
   const sigs = new Map();
   for (const p of group.people) {
-    const saved = p.hasSignature ? await files.get(p.id) : null;
+    const saved = await files.get(p.id);
     if (saved?.signature) sigs.set(p.id, await trimSignature(saved.signature).catch(() => null));
   }
   const W = 1754, H = 1240, M = 75, CW = W - 2 * M;
-  const FS = 16, LH = 21, PAD = 7, MIN_ROW = 42, HEAD_H = 64, TOP = 140, FOOT = 30;
+  const FS = 16, LH = 21, PAD = 7, MIN_ROW = 42, TOP = 140, FOOT = 30;
   const total = REG_COLS.reduce((s, c) => s + c.w, 0);
   const cols = REG_COLS.map(c => ({ ...c, px: c.w * CW / total }));
   const scratch = document.createElement('canvas').getContext('2d');
+  // Header labels wrap inside narrow columns: English (bold) lines, then Thai lines.
+  const heads = cols.map(c => {
+    setFont(scratch, 15, 700);
+    const en = wrapLines(scratch, c.en, c.px - 2 * PAD);
+    setFont(scratch, 15, 400);
+    return { en, th: wrapLines(scratch, c.th, c.px - 2 * PAD) };
+  });
+  const HEAD_LH = 19;
+  const HEAD_H = Math.max(64, ...heads.map(h => (h.en.length + h.th.length) * HEAD_LH + 2 * PAD));
   setFont(scratch, FS);
   const rowFor = (p, n) => {
     const cells = cols.map(c => (c.text && (p || c.always) ? wrapLines(scratch, c.text(p || {}, n), c.px - 2 * PAD) : []));
@@ -1983,13 +1984,15 @@ async function drawRegistrationPages(group) {
     let cx = M;
     x.textAlign = 'center';
     x.fillStyle = '#111';
-    for (const col of cols) {
-      setFont(x, 16, 700);
-      x.fillText(col.en, cx + col.px / 2, y + 10);
-      setFont(x, 16, 400);
-      x.fillText(col.th, cx + col.px / 2, y + 34);
+    cols.forEach((col, ci) => {
+      const { en, th } = heads[ci];
+      let hy = y + (HEAD_H - (en.length + th.length) * HEAD_LH) / 2;
+      setFont(x, 15, 700);
+      for (const l of en) { x.fillText(l, cx + col.px / 2, hy); hy += HEAD_LH; }
+      setFont(x, 15, 400);
+      for (const l of th) { x.fillText(l, cx + col.px / 2, hy); hy += HEAD_LH; }
       cx += col.px;
-    }
+    });
     const tableTop = y;
     y += HEAD_H;
 
@@ -1998,11 +2001,12 @@ async function drawRegistrationPages(group) {
       cx = M;
       cols.forEach((col, ci) => {
         if (col.mark) {
-          // Consent given: the participant's signature; otherwise ✓ / ✗.
-          const ok = r.p && col.mark(r.p);
+          // Consent given: the signature from the pad (left empty to sign by hand if there is none).
+          // Consent refused: ✗.
+          const ok = r.p ? col.mark(r.p) : null;
           const sig = r.p && sigs.get(r.p.id);
           if (ok && sig) drawContain(x, sig, cx + PAD, y + 4, col.px - 2 * PAD, r.h - 8);
-          else if (r.p) drawMark(x, cx + col.px / 2, y + r.h / 2, ok);
+          else if (ok === false) drawCross(x, cx + col.px / 2, y + r.h / 2);
         } else {
           const lines = r.cells[ci];
           const top = y + (r.h - lines.length * LH) / 2 + 1;
